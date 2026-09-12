@@ -1,0 +1,4 @@
+# Locally-stored uploaded images (see server/src/lib/storage/localDisk.js).
+# Directory structure is tracked via .gitkeep; contents are not.
+public/images/projects/*
+!public/images/projects/.gitkeep

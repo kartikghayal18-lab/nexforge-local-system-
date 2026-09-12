@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.env
+
+# Rust / Tauri build output
+src-tauri/target
+src-tauri/gen
+
+# Local encrypted vault database — never commit, even though it's ciphertext
+*.sqlite3
+*.nexforgevault

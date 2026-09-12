@@ -1,0 +1,2 @@
+# Future numbered migrations (e.g. 001_add_x.sql) go here, applied in
+# alphabetical order by db/migrate.js after schema.sql.
