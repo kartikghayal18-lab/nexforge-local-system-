@@ -6,7 +6,8 @@ see `CHANGELOG.md`). Full DDL: `server/db/schema.sql`. Applied with
 
 ## Tables
 
-- **users** — single-owner auth: `id`, `email` (unique), `password_hash` (bcrypt), `created_at`.
+- **users** — single-owner auth + owner profile: `id`, `email` (unique), `password_hash` (bcrypt — a random unusable hash for OTP-only accounts), `created_at`, plus profile columns added in `db/migrations/003_owner_profile.sql` (`full_name`, `business_name`, `phone`, `avatar_url`, `address`, `website`, `gstin`, `currency`, `timezone`, `profile_completed_at`). Profile lives on this one row rather than a separate table since this is a single-owner app — there is never more than one profile to join against.
+- **otp_codes** (added in `db/migrations/002_otp_codes.sql`) — email-OTP login: `email`, `code_hash` (bcrypt, never plaintext), `expires_at`, `consumed_at`, `attempt_count`, `created_at`. Also reused as the re-authentication step for account deletion (`DELETE /api/account`).
 - **clients** — contact/billing info for studio clients.
 - **projects** — linked to `clients` via `client_id` (`ON DELETE SET NULL`); also keeps a free-text `client` column for parity with the old schema's denormalized field.
 - **project_links**, **project_notes** — `ON DELETE CASCADE` from `projects`.

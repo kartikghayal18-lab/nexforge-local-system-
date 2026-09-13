@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Building2, FileText, Percent, Wallet, Palette, ShieldCheck } from 'lucide-react'
+import { Building2, FileText, Percent, Wallet, Palette, ShieldCheck, UserCog, AlertTriangle } from 'lucide-react'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/common/Button'
 import { Input, Select } from '@/components/common/Input'
@@ -8,14 +8,21 @@ import { useToast } from '@/hooks/useToast'
 import { NEXFORGE_PROFILE, DEFAULT_PAYMENT_DETAILS } from '@/data/seed'
 import { SecuritySettings } from '@/components/vault/SecuritySettings'
 import { coreApi, isDesktop } from '@/data/coreClient'
+import { useAuth, API_BASE_URL } from '@/auth/AuthContext'
+import { useProfile } from '@/auth/ProfileContext'
+import { ProfileForm } from '@/components/profile/ProfileForm'
+import { Modal } from '@/components/common/Modal'
+import { useNavigate } from 'react-router-dom'
 
 const tabs = [
+  { id: 'profile', label: 'Owner Profile', icon: UserCog },
   { id: 'company', label: 'Company Profile', icon: Building2 },
   { id: 'invoice', label: 'Invoice Settings', icon: FileText },
   { id: 'tax', label: 'Tax Settings', icon: Percent },
   { id: 'payment', label: 'Payment Details', icon: Wallet },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'backup', label: 'Backup & Security', icon: ShieldCheck },
+  { id: 'danger', label: 'Danger Zone', icon: AlertTriangle },
 ] as const
 
 type TabId = (typeof tabs)[number]['id']
@@ -64,6 +71,72 @@ export default function Settings() {
   const desktop = isDesktop()
   const [tab, setTab] = useState<TabId>('company')
   const { show } = useToast()
+  const { logout } = useAuth()
+  const { profile, refresh: refreshProfile } = useProfile()
+  const navigate = useNavigate()
+
+  // ---- Workspace reset ----
+  const [resetModalOpen, setResetModalOpen] = useState(false)
+  const [resetConfirmText, setResetConfirmText] = useState('')
+  const [resetting, setResetting] = useState(false)
+
+  async function handleResetWorkspace() {
+    setResetting(true)
+    try {
+      await coreApi.workspaceReset()
+      show('Workspace data reset')
+      setResetModalOpen(false)
+      setResetConfirmText('')
+      navigate('/', { replace: true })
+      window.location.reload()
+    } catch (e) {
+      show(friendlyError(e), 'error')
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  // ---- Account deletion ----
+  const [deleteStep, setDeleteStep] = useState<'idle' | 'code-sent'>('idle')
+  const [deleteCode, setDeleteCode] = useState('')
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [sendingDeleteCode, setSendingDeleteCode] = useState(false)
+  const [deletingAccount, setDeletingAccount] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  async function handleSendDeleteCode() {
+    if (!profile?.email) return
+    setSendingDeleteCode(true)
+    setDeleteError(null)
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: profile.email }),
+      })
+      if (!res.ok) throw new Error('Could not send verification code')
+      setDeleteStep('code-sent')
+      show('Verification code sent to your email')
+    } catch (e) {
+      setDeleteError(friendlyError(e))
+    } finally {
+      setSendingDeleteCode(false)
+    }
+  }
+
+  async function handleDeleteAccount() {
+    setDeletingAccount(true)
+    setDeleteError(null)
+    try {
+      await coreApi.accountDelete(deleteCode.trim())
+      logout()
+      navigate('/login', { replace: true })
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : 'Could not delete account')
+    } finally {
+      setDeletingAccount(false)
+    }
+  }
 
   // ---- Legacy localStorage-backed state (browser-mode fallback) ----
   const [company, setCompany] = useLocalStorage('settings:company', NEXFORGE_PROFILE)
@@ -146,6 +219,87 @@ export default function Settings() {
         </nav>
 
         <div className="rounded-xl border border-surface-400 bg-surface-200 p-5">
+          {tab === 'profile' && (
+            <div className="max-w-lg">
+              <ProfileForm
+                initial={profile}
+                submitLabel="Save changes"
+                onSaved={async () => {
+                  await refreshProfile()
+                  show('Profile updated')
+                }}
+              />
+            </div>
+          )}
+
+          {tab === 'danger' && (
+            <div className="max-w-lg space-y-6">
+              <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-4">
+                <h3 className="text-sm font-semibold text-ink-100 mb-1">Reset Workspace Data</h3>
+                <p className="text-xs text-ink-400 mb-3">
+                  Permanently deletes all clients, projects, invoices, payments, vault entries and files.
+                  Your owner account and profile are not affected.
+                </p>
+                <Button variant="secondary" size="sm" onClick={() => setResetModalOpen(true)}>Reset Workspace Data</Button>
+              </div>
+
+              <div className="rounded-lg border border-rose-500/25 bg-rose-500/5 p-4">
+                <h3 className="text-sm font-semibold text-ink-100 mb-1">Delete Owner Account</h3>
+                <p className="text-xs text-ink-400 mb-3">
+                  Permanently deletes your owner account and all associated workspace data. This cannot be
+                  undone, and there is no account left to sign back into.
+                </p>
+
+                {deleteStep === 'idle' && (
+                  <Button variant="danger" size="sm" onClick={handleSendDeleteCode} disabled={sendingDeleteCode}>
+                    {sendingDeleteCode ? 'Sending code…' : 'Start account deletion'}
+                  </Button>
+                )}
+
+                {deleteStep === 'code-sent' && (
+                  <div className="space-y-3">
+                    <Input
+                      label="Verification code (sent to your email)"
+                      value={deleteCode}
+                      onChange={(e) => setDeleteCode(e.target.value.replace(/\D/g, ''))}
+                      maxLength={6}
+                      placeholder="123456"
+                    />
+                    <Input
+                      label='Type "DELETE" to confirm'
+                      value={deleteConfirmText}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      placeholder="DELETE"
+                    />
+                    {deleteError && <p className="text-sm text-rose-400">{deleteError}</p>}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        disabled={deleteConfirmText !== 'DELETE' || deleteCode.length !== 6 || deletingAccount}
+                        onClick={handleDeleteAccount}
+                      >
+                        {deletingAccount ? 'Deleting…' : 'Permanently delete my account'}
+                      </Button>
+                      <button
+                        type="button"
+                        className="text-xs text-ink-400 hover:text-ink-100"
+                        onClick={() => {
+                          setDeleteStep('idle')
+                          setDeleteCode('')
+                          setDeleteConfirmText('')
+                          setDeleteError(null)
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {tab === 'company' && (
             desktop ? (
               loading ? (
@@ -285,13 +439,42 @@ export default function Settings() {
 
           {tab === 'backup' && <SecuritySettings />}
 
-          {tab !== 'appearance' && tab !== 'backup' && (
+          {tab !== 'appearance' && tab !== 'backup' && tab !== 'profile' && tab !== 'danger' && (
             <div className="flex justify-end pt-5 mt-5 border-t border-surface-400">
               <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</Button>
             </div>
           )}
         </div>
       </div>
+
+      <Modal open={resetModalOpen} onClose={() => setResetModalOpen(false)} title="Reset Workspace Data">
+        <div className="space-y-3">
+          <p className="text-sm text-ink-300">
+            This will permanently delete all workspace data. Your owner account and profile will remain.
+          </p>
+          <Input
+            label='Type "RESET" to confirm'
+            value={resetConfirmText}
+            onChange={(e) => setResetConfirmText(e.target.value)}
+            placeholder="RESET"
+          />
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                setResetModalOpen(false)
+                setResetConfirmText('')
+              }}
+              className="rounded-lg border border-surface-500 bg-surface-300 px-3.5 py-2 text-sm text-ink-100 hover:bg-surface-400 transition-colors"
+            >
+              Cancel
+            </button>
+            <Button variant="danger" disabled={resetConfirmText !== 'RESET' || resetting} onClick={handleResetWorkspace}>
+              {resetting ? 'Resetting…' : 'Reset Workspace Data'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

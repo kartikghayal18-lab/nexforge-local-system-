@@ -10,10 +10,23 @@ import type {
   ProjectLinkRecord, NewProjectLink,
   ProjectNote, NewProjectNote, UpdateProjectNote,
   ProjectFile, ProjectImage,
+  OwnerProfile, ProfileUpdate,
   Invoice, NewInvoice, UpdateInvoice,
   Payment, NewPayment,
   DashboardStats,
 } from './coreTypes'
+
+// Thrown for a failed API call; carries `fields` when the backend returned
+// per-field validation errors (see PUT /api/profile), so a caller can show
+// them without re-parsing the message text.
+export class CoreApiError extends Error {
+  fields?: Record<string, string>
+  constructor(message: string, fields?: Record<string, string>) {
+    super(message)
+    this.name = 'CoreApiError'
+    this.fields = fields
+  }
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken()
@@ -30,7 +43,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Request failed: ${res.status}`)
+    throw new CoreApiError(body.error || `Request failed: ${res.status}`, body.fields)
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
@@ -105,6 +118,23 @@ export const coreApi = {
   ) => post<ProjectFile>(`/api/files/project/${projectId}/confirm`, args),
   projectFilesDownloadUrl: (id: string) => get<{ url: string }>(`/api/files/${id}/download`),
   projectFilesDelete: (id: string) => del<void>(`/api/files/${id}`),
+
+  // Owner profile
+  profileGet: () => get<OwnerProfile>('/api/profile'),
+  profileUpdate: (input: ProfileUpdate) => put<OwnerProfile>('/api/profile', input),
+  profileAvatarUpload: (file: File) => {
+    const formData = new FormData()
+    formData.append('avatar', file)
+    return request<{ url: string }>('/api/profile/avatar', { method: 'POST', body: formData })
+  },
+  profileAvatarSetStatic: (url: string) => post<{ url: string }>('/api/profile/avatar/static', { url }),
+
+  // Workspace reset — deletes all business data, keeps the owner account/profile.
+  workspaceReset: () => post<{ ok: boolean; filesDeleted: number; fileErrors: number }>('/api/workspace/reset'),
+
+  // Full account deletion — requires a fresh OTP `code` (see coreApi usage
+  // in Settings.tsx: send-otp first, then pass the resulting code here).
+  accountDelete: (code: string) => request<{ ok: boolean }>('/api/account', { method: 'DELETE', body: JSON.stringify({ code }) }),
 
   // Settings
   settingsGetAll: () => get<Record<string, string>>('/api/settings'),

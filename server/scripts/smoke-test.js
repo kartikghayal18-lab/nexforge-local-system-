@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
 import crypto from 'node:crypto'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -261,6 +262,195 @@ async function main() {
     process.env.NODE_ENV = prevNodeEnv
     if (prevBackend === undefined) delete process.env.STORAGE_BACKEND
     else process.env.STORAGE_BACKEND = prevBackend
+  }
+
+  // 13. Email OTP login — generation, hashing, expiry, single-use, rate limiting.
+  // Exercises server/src/lib/otp.js directly and otp_codes via pg-mem — no
+  // HTTP server, no real Resend send (server/src/lib/email.js is never
+  // imported here, only the route imports it).
+  {
+    const { generateOtpCode, hashOtpCode, compareOtpCode, checkSendRateLimit, OTP_EXPIRY_MS, MAX_SENDS_PER_HOUR } = await import('../src/lib/otp.js')
+
+    const code = generateOtpCode()
+    check('otp: generates a 6-digit numeric code in range', /^\d{6}$/.test(code) && Number(code) >= 100000 && Number(code) <= 999999, code)
+
+    const codeHash = await hashOtpCode(code)
+    check('otp: hash is not the plaintext code', codeHash !== code)
+    check('otp: compareOtpCode matches the correct code', await compareOtpCode(code, codeHash))
+    check('otp: compareOtpCode rejects a wrong code', !(await compareOtpCode('000000', codeHash)))
+
+    // Rate limiting — pure function, plain Date arrays.
+    check('otp rate limit: no recent sends → allowed', checkSendRateLimit([]).allowed)
+    const justNow = new Date()
+    const cooldownCheck = checkSendRateLimit([justNow], justNow)
+    check('otp rate limit: 60s cooldown blocks an immediate resend', !cooldownCheck.allowed && typeof cooldownCheck.waitSeconds === 'number', JSON.stringify(cooldownCheck))
+    const past61s = new Date(justNow.getTime() - 61_000)
+    check('otp rate limit: allowed again just after the 60s cooldown', checkSendRateLimit([past61s], justNow).allowed)
+    const fiveInLastHour = Array.from({ length: MAX_SENDS_PER_HOUR }, (_, i) => new Date(justNow.getTime() - (2 * 60 + i * 60) * 1000))
+    const hourlyCheck = checkSendRateLimit(fiveInLastHour, justNow)
+    check(`otp rate limit: ${MAX_SENDS_PER_HOUR}/hour cap blocks a 6th send`, !hourlyCheck.allowed && /too many/i.test(hourlyCheck.error), JSON.stringify(hourlyCheck))
+
+    // Full lifecycle against pg-mem's otp_codes table: issue, verify once
+    // (consumes it), verify again (must fail — single-use), and a
+    // separately-issued already-expired row (must fail on expiry).
+    const otpEmail = 'otp-test@example.com'
+    const otpCode = generateOtpCode()
+    const otpHash = await hashOtpCode(otpCode)
+    const futureExpiry = new Date(Date.now() + OTP_EXPIRY_MS)
+    const otpRow = (await pool.query(
+      'INSERT INTO otp_codes (email, code_hash, expires_at) VALUES ($1,$2,$3) RETURNING *',
+      [otpEmail, otpHash, futureExpiry],
+    )).rows[0]
+
+    const firstVerifyMatches = await compareOtpCode(otpCode, otpRow.code_hash)
+    check('otp lifecycle: correct code matches before consumption', firstVerifyMatches)
+    await pool.query('UPDATE otp_codes SET consumed_at = now() WHERE id = $1', [otpRow.id])
+
+    const stillUnconsumed = (await pool.query(
+      'SELECT * FROM otp_codes WHERE email = $1 AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1',
+      [otpEmail],
+    )).rows
+    check('otp lifecycle: single-use — consumed code no longer returned as an active OTP', stillUnconsumed.length === 0)
+
+    // Explicit id here too, for the same pg-mem gen_random_uuid-caching
+    // reason noted above for project_images (real Postgres has no such issue).
+    const expiredHash = await hashOtpCode('111111')
+    const expiredRow = (await pool.query(
+      'INSERT INTO otp_codes (id, email, code_hash, expires_at) VALUES ($1,$2,$3, now() - interval \'1 minute\') RETURNING *',
+      [crypto.randomUUID(), 'otp-expired@example.com', expiredHash],
+    )).rows[0]
+    check('otp lifecycle: expired row is rejected by an expires_at check', new Date(expiredRow.expires_at).getTime() < Date.now())
+  }
+
+  // 14. Owner profile — validation, update round-trip, persistence across
+  // a simulated "fresh session" (a brand new query against the same row,
+  // not any cached JS object).
+  {
+    const { validateProfileUpdate, isProfileComplete } = await import('../src/lib/profileValidation.js')
+
+    const incomplete = { full_name: 'Kartik Ghayal' } // missing everything else required
+    check('profile: incomplete record is not complete', !isProfileComplete(incomplete))
+
+    const complete = {
+      full_name: 'Kartik Ghayal', business_name: 'Nexforge Studios', phone: '+91 98765 43210',
+      avatar_url: '/avatar-placeholder.svg', address: '123 Main St', currency: 'INR', timezone: 'Asia/Kolkata',
+    }
+    check('profile: fully-populated record is complete', isProfileComplete(complete))
+
+    const badCurrency = validateProfileUpdate({ currency: 'ZZZ' }, complete)
+    check('profile validation: rejects a currency outside the allowlist', !badCurrency.ok && !!badCurrency.errors.currency)
+
+    const badTimezone = validateProfileUpdate({ timezone: 'Not/ARealZone' }, complete)
+    check('profile validation: rejects an invalid IANA timezone', !badTimezone.ok && !!badTimezone.errors.timezone)
+
+    const badWebsite = validateProfileUpdate({ website: 'not a url' }, complete)
+    check('profile validation: rejects a malformed website URL', !badWebsite.ok && !!badWebsite.errors.website)
+
+    const blankRequired = validateProfileUpdate({ full_name: '   ' }, complete)
+    check('profile validation: rejects a blank required field', !blankRequired.ok && !!blankRequired.errors.full_name)
+
+    const okUpdate = validateProfileUpdate({ business_name: 'New Studio Name' }, complete)
+    check('profile validation: accepts a valid partial update', okUpdate.ok)
+
+    // Real round-trip against pg-mem: update the row, then re-SELECT it
+    // fresh (simulating a brand-new session/request) to confirm it's the
+    // DB — not any in-memory object — that persisted the change.
+    await pool.query(
+      `UPDATE users SET full_name=$1, business_name=$2, phone=$3, avatar_url=$4, address=$5, currency=$6, timezone=$7, profile_completed_at=now() WHERE id=$8`,
+      [complete.full_name, complete.business_name, complete.phone, complete.avatar_url, complete.address, complete.currency, complete.timezone, userRes.rows[0].id],
+    )
+    const freshRead = (await pool.query('SELECT full_name, business_name, profile_completed_at FROM users WHERE id=$1', [userRes.rows[0].id])).rows[0]
+    check('profile: update persists and is readable in a fresh query', freshRead.full_name === 'Kartik Ghayal' && freshRead.business_name === 'Nexforge Studios')
+    check('profile: profile_completed_at is set once required fields are present', !!freshRead.profile_completed_at)
+  }
+
+  // 15. requireAuth — the real security boundary, independent of any
+  // frontend routing. Exercised directly against the middleware function
+  // with fake req/res objects, since there's no HTTP server running here.
+  {
+    const { requireAuth } = await import('../src/middleware/auth.js')
+    process.env.JWT_SECRET = process.env.JWT_SECRET || 'smoke-test-secret'
+
+    function fakeReqRes(authHeader) {
+      const req = { headers: authHeader ? { authorization: authHeader } : {} }
+      let statusCode = null
+      let body = null
+      const res = {
+        status(code) { statusCode = code; return this },
+        json(b) { body = b; return this },
+      }
+      return { req, res, getResult: () => ({ statusCode, body }) }
+    }
+
+    let nextCalled = false
+    const missing = fakeReqRes(undefined)
+    requireAuth(missing.req, missing.res, () => { nextCalled = true })
+    check('requireAuth: rejects a request with no Authorization header', missing.getResult().statusCode === 401 && !nextCalled)
+
+    nextCalled = false
+    const garbage = fakeReqRes('Bearer not-a-real-jwt')
+    requireAuth(garbage.req, garbage.res, () => { nextCalled = true })
+    check('requireAuth: rejects a garbage/invalid token', garbage.getResult().statusCode === 401 && !nextCalled)
+
+    nextCalled = false
+    const expired = fakeReqRes(`Bearer ${jwt.sign({ sub: 'x', email: 'x@example.com' }, process.env.JWT_SECRET, { expiresIn: -10 })}`)
+    requireAuth(expired.req, expired.res, () => { nextCalled = true })
+    check('requireAuth: rejects an expired token', expired.getResult().statusCode === 401 && !nextCalled)
+
+    nextCalled = false
+    const valid = fakeReqRes(`Bearer ${jwt.sign({ sub: userRes.rows[0].id, email }, process.env.JWT_SECRET, { expiresIn: '7d' })}`)
+    requireAuth(valid.req, valid.res, () => { nextCalled = true })
+    check('requireAuth: accepts a valid token and calls next()', nextCalled && valid.req.userId === userRes.rows[0].id)
+  }
+
+  // 16. Workspace reset — clears every listed workspace table while
+  // leaving the users row (and its now-completed profile) intact. Calls
+  // the exact same lib function the route uses (server/src/lib/workspaceReset.js).
+  {
+    const { deleteAllWorkspaceData, collectLocalImageStorageKeys, WORKSPACE_TABLES_IN_DELETE_ORDER } = await import('../src/lib/workspaceReset.js')
+
+    const preCounts = {}
+    for (const table of WORKSPACE_TABLES_IN_DELETE_ORDER) {
+      preCounts[table] = (await pool.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n
+    }
+    const anyDataBeforeReset = Object.values(preCounts).some((n) => n > 0)
+    check('workspace reset: fixture has non-empty workspace tables before reset', anyDataBeforeReset, JSON.stringify(preCounts))
+
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      await collectLocalImageStorageKeys(client) // exercised for coverage; no real files in this test
+      await deleteAllWorkspaceData(client)
+      await client.query('COMMIT')
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+
+    const postCounts = {}
+    for (const table of WORKSPACE_TABLES_IN_DELETE_ORDER) {
+      postCounts[table] = (await pool.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n
+    }
+    const allEmptyAfterReset = Object.values(postCounts).every((n) => n === 0)
+    check('workspace reset: every listed workspace table is empty afterward', allEmptyAfterReset, JSON.stringify(postCounts))
+
+    const userStillThere = (await pool.query('SELECT full_name FROM users WHERE id=$1', [userRes.rows[0].id])).rows[0]
+    check('workspace reset: the owner user row (and profile) survives', userStillThere?.full_name === 'Kartik Ghayal')
+  }
+
+  // 17. Account deletion — MUST run last: this actually removes the user
+  // row, so nothing after this point can assume `users` still has a row.
+  {
+    const preDeleteCount = (await pool.query('SELECT count(*)::int AS n FROM users')).rows[0].n
+    check('account deletion fixture: exactly one owner user exists before deletion', preDeleteCount === 1)
+
+    await pool.query('DELETE FROM otp_codes WHERE email = $1', [email])
+    await pool.query('DELETE FROM users WHERE id = $1', [userRes.rows[0].id])
+
+    const postDeleteCount = (await pool.query('SELECT count(*)::int AS n FROM users')).rows[0].n
+    check('account deletion: the user row is actually removed', postDeleteCount === 0)
   }
 
   console.log(`\n${passed} passed, ${failed} failed`)

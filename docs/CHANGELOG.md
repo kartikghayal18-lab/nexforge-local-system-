@@ -1,5 +1,33 @@
 # Changelog
 
+## Phase 6 — Logout/profile menu, owner profile, workspace reset, account deletion
+- Owner profile now lives as columns on `users` (`db/migrations/003_owner_profile.sql`):
+  full_name, business_name, phone, avatar_url, address, website, gstin,
+  currency, timezone, profile_completed_at. `GET/PUT /api/profile` and
+  `POST /api/profile/avatar` (reusing the exact same image storage
+  abstraction and production gate as project images) manage it. A first-run
+  setup screen blocks the dashboard until required fields are filled in; a
+  generated placeholder avatar satisfies the "avatar required" rule if the
+  owner skips uploading a real one.
+- Sidebar's bottom-left owner block is now a real dropdown (profile
+  loading skeleton, then real name/business name/avatar) with Edit Owner
+  Profile / Settings / Logout.
+- `POST /api/auth/logout` added for symmetry — stateless JWTs have no
+  server-side session to revoke; the actual logout is the client discarding
+  its token.
+- `POST /api/workspace/reset` (Settings → Danger Zone): deletes every
+  workspace table in one transaction, leaves `users` untouched, requires
+  typing "RESET" in the UI to confirm.
+- `DELETE /api/account` (Settings → Danger Zone, visually separate from
+  workspace reset): deletes the owner account and all workspace data,
+  gated behind a fresh OTP code (reuses `/api/auth/send-otp`) plus typing
+  "DELETE" in the UI.
+- Deliberately deferred: migrating the JWT from localStorage to an
+  httpOnly cookie — cross-origin (Vercel↔Render) cookies need
+  `SameSite=None; Secure` + `credentials: true` everywhere and introduce
+  CSRF considerations this app doesn't currently have; out of scope for
+  this batch, tracked as a future decision.
+
 ## Phase 5 — Project cover + gallery images
 - Added `project_images` table (`db/migrations/001_project_images.sql`):
   cover + gallery images per project, metadata only (`url`, `storage_key`,

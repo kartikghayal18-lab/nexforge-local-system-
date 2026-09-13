@@ -86,6 +86,38 @@ disk and pretending it's permanent.
   regardless of where the bytes actually live, and the 503 gate above stops
   applying automatically once `STORAGE_BACKEND` is no longer `local-dev`.
 
+## 4. Frontend — Vercel
+
+1. New Project → import the repo → root directory (repo root, not `server/`).
+2. Framework preset: Vite. Build command `npm run build`, output dir `dist`.
+3. Environment variable: `VITE_API_BASE_URL` = the Render URL from step 3.
+4. Deploy. Once you have the Vercel URL, go back to Render and set
+   `CORS_ORIGIN` to that exact origin (no trailing slash), then redeploy the
+   backend so CORS reflects it.
+
+## 5. Email OTP login (Resend)
+
+Sign-in supports emailed one-time codes in addition to password login:
+`POST /api/auth/send-otp` emails a 6-digit code (via Resend,
+`server/src/lib/email.js`) and `POST /api/auth/verify-otp` checks it and
+logs the user in — creating the single owner account on the very first
+successful verification if none exists yet, same rule as `/register`. The
+Resend API key and sender are backend-only env vars
+(`RESEND_API_KEY`, `RESEND_FROM_EMAIL`) — never exposed to the frontend.
+`RESEND_FROM_EMAIL` must be an address on a domain verified in Resend's
+dashboard, or sends will fail.
+
+## 6. First login
+
+Visit the deployed frontend and either enter your email to receive a
+sign-in code (OTP), or click "Create the owner account" to register with a
+password — whichever completes first creates the single owner account.
+Both paths are permanently locked after that first account is created:
+`POST /api/auth/register` returns 403 once a user exists, and
+`POST /api/auth/verify-otp` returns "No account exists for this email" for
+any other address once a user exists — this is a single-owner app, not a
+public signup form.
+
 ## What's verified vs. not
 
 Everything above was written against the real Neon/R2/Render/Vercel APIs and

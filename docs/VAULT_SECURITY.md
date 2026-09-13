@@ -48,7 +48,11 @@ the key in memory.
   git, and rotate it (re-encrypting existing rows) if it's ever exposed.
 - This is a **single-owner** app. There is no per-user vault partitioning —
   registration is deliberately locked to one account (see `POST
-  /api/auth/register`).
+  /api/auth/register`, and identically enforced for the newer `POST
+  /api/auth/verify-otp` flow — see `docs/ARCHITECTURE.md`'s Auth section).
+  Signing in via email OTP still issues the exact same JWT as password
+  login, so everything above about JWT scope and expiry applies unchanged
+  regardless of which login method was used.
 
 ## Backup/restore and cross-device migration
 

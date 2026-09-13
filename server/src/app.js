@@ -13,6 +13,9 @@ import settingsRoutes from './routes/settings.js'
 import vaultRoutes from './routes/vault.js'
 import filesRoutes from './routes/files.js'
 import dashboardRoutes from './routes/dashboard.js'
+import profileRoutes from './routes/profile.js'
+import workspaceRoutes from './routes/workspace.js'
+import accountRoutes from './routes/account.js'
 
 export function createApp() {
   const app = express()
@@ -39,6 +42,9 @@ export function createApp() {
   app.use('/api/vault', requireAuth, vaultRoutes)
   app.use('/api/files', requireAuth, filesRoutes)
   app.use('/api/dashboard', requireAuth, dashboardRoutes)
+  app.use('/api/profile', requireAuth, profileRoutes)
+  app.use('/api/workspace', requireAuth, workspaceRoutes)
+  app.use('/api/account', requireAuth, accountRoutes)
 
   // Centralized error handler — never leak stack traces to clients.
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars

@@ -51,8 +51,22 @@
 - **PDF generation**: `pdfkit`, server-side, streamed from
   `GET /api/invoices/:id/pdf` (`server/src/lib/pdf.js`) — a real generated
   PDF, not a screenshot or client-side print.
-- **Auth**: bcrypt password hashing + JWT (7-day expiry). Single-owner:
-  `/api/auth/register` refuses once a user exists.
+- **Auth**: two ways to sign in, both single-owner:
+  - Password: bcrypt password hashing + JWT (7-day expiry).
+    `/api/auth/register` refuses once a user exists.
+  - Email OTP (`server/src/routes/auth.js` `/send-otp` + `/verify-otp`,
+    `server/src/lib/otp.js`, `server/src/lib/email.js`): a 6-digit code
+    (`crypto.randomInt`, never `Math.random()`) is emailed via Resend, only
+    its bcrypt hash is stored (`otp_codes` table, `db/migrations/002_otp_codes.sql`),
+    it expires after 10 minutes, is single-use (consumed on verify), and
+    sending is rate-limited per email (60s cooldown + 5/hour, both computed
+    from `otp_codes.created_at`). `/send-otp` never reveals whether the
+    email belongs to a user; `/verify-otp` creates the single owner account
+    on first successful verification only if `users` is still empty
+    (mirroring `/register`'s 403-after-first-user rule) and otherwise logs
+    the existing user in. Both login paths call the same `signToken()`
+    helper, so `AuthContext`/`requireAuth` don't know or care which method
+    was used.
 - **Vault encryption**: AES-256-GCM, server-side key
   (`ENCRYPTION_KEY`) — see `docs/VAULT_SECURITY.md`.
 

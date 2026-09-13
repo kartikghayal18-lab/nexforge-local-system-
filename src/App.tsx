@@ -15,8 +15,10 @@ import Notes from '@/pages/Notes'
 import Files from '@/pages/Files'
 import Settings from '@/pages/Settings'
 import Login from '@/pages/Login'
+import ProfileSetup from '@/pages/ProfileSetup'
 import NotFound from '@/pages/NotFound'
 import { useAuth } from '@/auth/AuthContext'
+import { ProfileProvider, useProfile } from '@/auth/ProfileContext'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth()
@@ -28,6 +30,24 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />
   }
+  // ProfileProvider fetches live auth state's profile; gating below reads
+  // it, so this reflects the current session on every render, not a stale
+  // snapshot from before logout/login.
+  return <ProfileProvider>{children}</ProfileProvider>
+}
+
+// Blocks navigation into the rest of the app until the owner profile's
+// required fields are filled in (profile_completed_at is null) — required
+// fields can't be skipped, but this only ever runs once per account.
+function RequireCompleteProfile({ children }: { children: React.ReactNode }) {
+  const { profile, loading, isComplete } = useProfile()
+
+  if (loading) {
+    return <div className="min-h-screen flex items-center justify-center text-ink-400 text-sm">Loading…</div>
+  }
+  if (profile && !isComplete) {
+    return <ProfileSetup />
+  }
   return <>{children}</>
 }
 
@@ -38,7 +58,9 @@ export default function App() {
       <Route
         element={
           <ProtectedRoute>
-            <AppLayout />
+            <RequireCompleteProfile>
+              <AppLayout />
+            </RequireCompleteProfile>
           </ProtectedRoute>
         }
       >

@@ -2,6 +2,26 @@
 // Field names match the Rust struct fields verbatim (snake_case) since no
 // serde rename_all is applied to these structs.
 
+export interface OwnerProfile {
+  id: string
+  email: string
+  full_name: string | null
+  business_name: string | null
+  phone: string | null
+  avatar_url: string | null
+  address: string | null
+  website: string | null
+  gstin: string | null
+  currency: string | null
+  timezone: string | null
+  profile_completed_at: string | null
+  created_at: string
+}
+
+export type ProfileUpdate = Partial<
+  Pick<OwnerProfile, 'full_name' | 'business_name' | 'phone' | 'avatar_url' | 'address' | 'website' | 'gstin' | 'currency' | 'timezone'>
+>
+
 export interface Client {
   id: string
   name: string
