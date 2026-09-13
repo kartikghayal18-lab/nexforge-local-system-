@@ -4,14 +4,30 @@
 
 1. Create a project at neon.tech, create a database, and copy its
    connection string (with `?sslmode=require`) as `DATABASE_URL`.
-2. Locally (or from any machine with network access to Neon):
+2. Migrations are applied automatically. `server/src/server.js` runs
+   `runMigrations()` (from `server/db/migrate.js`) once at process startup,
+   before it starts accepting traffic — so every deploy on Render
+   automatically applies `server/db/schema.sql` plus any new file added to
+   `server/db/migrations/*.sql` against the real `DATABASE_URL`, with no
+   manual step to remember. Every statement is idempotent
+   (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, etc.) and
+   applied migrations are tracked in a `schema_migrations` table, so it's
+   safe to boot the server any number of times, including against a
+   database that's already fully up to date.
+   If the migration step fails (e.g. `DATABASE_URL` unreachable or wrong),
+   the server logs a clear `[server] failed to apply database migrations: ...`
+   line and exits — it will never silently serve traffic against a
+   mismatched schema. Check Render's deploy logs for this line if the API
+   returns 500s after a deploy.
+3. You can still run it by hand from any machine with network access to
+   Neon (useful the first time, or to pre-apply a migration before
+   deploying):
    ```bash
    cd server
    cp .env.example .env   # paste in DATABASE_URL
    npm install
    npm run migrate
    ```
-   This applies `server/db/schema.sql`.
 
 ## 2. File storage — Cloudflare R2
 
