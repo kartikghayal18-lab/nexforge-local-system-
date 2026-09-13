@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import multer from 'multer'
 import { pool } from '../db/pool.js'
-import { saveImage, validateImageUpload, MAX_IMAGE_SIZE_BYTES, StorageNotConfiguredError } from '../lib/storage/index.js'
+import { saveImage, validateImageUpload, MAX_IMAGE_SIZE_BYTES } from '../lib/storage/index.js'
 import { validateProfileUpdate, isProfileComplete, ALL_PROFILE_FIELDS } from '../lib/profileValidation.js'
 
 const router = Router()
@@ -54,13 +54,8 @@ router.post('/avatar', upload.single('avatar'), async (req, res) => {
   const validation = validateImageUpload({ buffer, mimeType: mimetype, originalName: originalname, size })
   if (!validation.ok) return res.status(400).json({ error: validation.error })
 
-  try {
-    const { url } = await saveImage({ buffer, projectId: `profile-${req.userId}`, originalName: originalname, mimeType: mimetype })
-    res.json({ url })
-  } catch (err) {
-    if (err instanceof StorageNotConfiguredError) return res.status(503).json({ error: err.message })
-    throw err
-  }
+  const { url } = await saveImage({ buffer, projectId: `profile-${req.userId}`, originalName: originalname, mimeType: mimetype })
+  res.json({ url })
 })
 
 // Records an avatar that's already a static asset (e.g. committed under the

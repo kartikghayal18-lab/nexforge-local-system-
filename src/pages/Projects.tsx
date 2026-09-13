@@ -7,30 +7,21 @@ import { EmptyState } from '@/components/common/EmptyState'
 import { ProjectCard } from '@/components/projects/ProjectCard'
 import { Modal, ConfirmDialog } from '@/components/common/Modal'
 import { Input, TextArea } from '@/components/common/Input'
-import { useProjects as useLegacyProjects } from '@/hooks/useStore'
 import { useToast } from '@/hooks/useToast'
 import { ProjectStatus } from '@/types'
-import { uid } from '@/utils/storage'
-import { todayISO } from '@/utils/format'
-import { coreApi, isDesktop } from '@/data/coreClient'
+import { coreApi } from '@/data/coreClient'
 import type { ProjectFull, NewProject } from '@/data/coreTypes'
 
 const filters: ('All' | ProjectStatus)[] = ['All', 'Active', 'Planning', 'Completed', 'Archived']
 
 function friendlyError(e: unknown): string {
   console.error(e)
-  return 'Something went wrong. Please try again.'
+  return e instanceof Error ? e.message : 'Something went wrong. Please try again.'
 }
 
 export default function Projects() {
-  const desktop = isDesktop()
-
-  // Legacy localStorage-backed store, used only as a browser-mode fallback
-  // (demo data) when Desktop Mode / the Rust backend is unavailable.
-  const [legacyProjects, setLegacyProjects] = useLegacyProjects()
-
   const [dbProjects, setDbProjects] = useState<ProjectFull[]>([])
-  const [loading, setLoading] = useState(desktop)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const [params, setParams] = useSearchParams()
@@ -43,7 +34,6 @@ export default function Projects() {
   const [form, setForm] = useState({ name: '', client: '', description: '', technology: '' })
 
   async function reload() {
-    if (!desktop) return
     setLoading(true)
     setError(null)
     try {
@@ -58,32 +48,19 @@ export default function Projects() {
 
   useEffect(() => {
     reload()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Unified display shape regardless of source.
   const items = useMemo(() => {
-    if (desktop) {
-      return dbProjects.map((p) => ({
-        id: p.id,
-        name: p.name,
-        client: p.client || 'Unassigned',
-        status: (p.status || 'Planning') as ProjectStatus,
-        tags: (p.tech_stack || '').split(',').map((t) => t.trim()).filter(Boolean),
-        updatedAt: p.updated_at,
-        hasWebsite: !!p.live_url,
-      }))
-    }
-    return legacyProjects.map((p) => ({
+    return dbProjects.map((p) => ({
       id: p.id,
       name: p.name,
-      client: p.client,
-      status: p.status,
-      tags: p.technology,
-      updatedAt: p.updatedAt,
-      hasWebsite: !!p.websiteUrl,
+      client: p.client || 'Unassigned',
+      status: (p.status || 'Planning') as ProjectStatus,
+      tags: (p.tech_stack || '').split(',').map((t) => t.trim()).filter(Boolean),
+      updatedAt: p.updated_at,
+      hasWebsite: !!p.live_url,
     }))
-  }, [desktop, dbProjects, legacyProjects])
+  }, [dbProjects])
 
   const filtered = useMemo(() => {
     return items.filter((p) => {
@@ -111,71 +88,45 @@ export default function Projects() {
     e.preventDefault()
     if (!form.name.trim()) return
 
-    if (desktop) {
-      const input: NewProject = {
-        name: form.name.trim(),
-        client_id: null,
-        client: form.client.trim() || null,
-        description: form.description.trim() || null,
-        status: 'Planning',
-        category: null,
-        tech_stack: form.technology.trim() || null,
-        framework: null,
-        backend: null,
-        database_type: null,
-        hosting: null,
-        repository_url: null,
-        live_url: null,
-        staging_url: null,
-        start_date: null,
-        deadline: null,
-        budget: null,
-        notes: null,
-      }
-      try {
-        await coreApi.projectsCreate(input)
-        show('Project created')
-        closeModal()
-        reload()
-      } catch (e) {
-        show(friendlyError(e), 'error')
-      }
-      return
+    const input: NewProject = {
+      name: form.name.trim(),
+      client_id: null,
+      client: form.client.trim() || null,
+      description: form.description.trim() || null,
+      status: 'Planning',
+      category: null,
+      tech_stack: form.technology.trim() || null,
+      framework: null,
+      backend: null,
+      database_type: null,
+      hosting: null,
+      repository_url: null,
+      live_url: null,
+      staging_url: null,
+      start_date: null,
+      deadline: null,
+      budget: null,
+      notes: null,
     }
-
-    const now = todayISO()
-    setLegacyProjects([
-      {
-        id: uid('proj'),
-        name: form.name.trim(),
-        client: form.client.trim() || 'Unassigned',
-        description: form.description.trim(),
-        technology: form.technology.split(',').map((t) => t.trim()).filter(Boolean),
-        status: 'Planning',
-        createdAt: now,
-        updatedAt: now,
-      },
-      ...legacyProjects,
-    ])
-    show('Project created')
-    closeModal()
+    try {
+      await coreApi.projectsCreate(input)
+      show('Project created')
+      closeModal()
+      reload()
+    } catch (e) {
+      show(friendlyError(e), 'error')
+    }
   }
 
   async function confirmDelete() {
     if (!deleteTarget) return
-    if (desktop) {
-      try {
-        await coreApi.projectsDelete(deleteTarget.id)
-        show('Project deleted')
-        setDeleteTarget(null)
-        reload()
-      } catch (e) {
-        show(friendlyError(e), 'error')
-      }
-    } else {
-      setLegacyProjects(legacyProjects.filter((p) => p.id !== deleteTarget.id))
+    try {
+      await coreApi.projectsDelete(deleteTarget.id)
       show('Project deleted')
       setDeleteTarget(null)
+      reload()
+    } catch (e) {
+      show(friendlyError(e), 'error')
     }
   }
 
@@ -191,11 +142,6 @@ export default function Projects() {
         }
       />
 
-      {!desktop && (
-        <div className="mb-4 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-400">
-          Demo data — open this app in Desktop Mode to save projects permanently.
-        </div>
-      )}
       {error && (
         <div className="mb-4 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-400">
           {error}

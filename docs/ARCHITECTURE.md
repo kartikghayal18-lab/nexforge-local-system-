@@ -5,16 +5,18 @@
 │   Frontend   │ ─────────────────────▶ │   Express API      │
 │  React+Vite  │ ◀───────────────────── │   (Render)          │
 │  (Vercel)    │        JSON            │  server/src/*.js     │
-└──────┬───────┘                        └─────────┬────────────┘
-       │                                            │ pg (parameterized SQL)
-       │ presigned PUT/GET (direct browser↔R2)      ▼
-       │                                    ┌──────────────────┐
-       ▼                                    │ PostgreSQL (Neon)│
-┌──────────────┐                            └──────────────────┘
-│ Cloudflare R2│
-│ (file bytes) │
-└──────────────┘
+└──────────────┘                        └─────────┬────────────┘
+                                                    │ pg (parameterized SQL)
+                        ┌───────────────────────────┼──────────────────┐
+                        ▼                            ▼                  │
+                ┌──────────────────┐        ┌──────────────────┐        │
+                │ PostgreSQL (Neon)│        │    Cloudinary    │        │
+                └──────────────────┘        │  (file bytes)    │        │
+                                             └──────────────────┘◀──────┘
 ```
+The backend proxies every upload — it validates the buffer, then hands it
+to Cloudinary via the Node SDK. The browser never talks to Cloudinary
+directly (no presigned URLs, no bucket CORS to configure).
 
 - **Frontend**: unchanged React UI (`src/pages`, `src/components`), same
   Tailwind design. Only the data layer changed: `src/data/coreClient.ts` and
@@ -27,27 +29,18 @@
   (`server/src/middleware/auth.js`).
 - **Database**: PostgreSQL on Neon. Access via `pg` with parameterized
   queries only (`server/src/db/pool.js`). Schema in `server/db/schema.sql`.
-- **File storage (generic project files)**: Cloudflare R2 (S3-compatible).
-  The backend never proxies file bytes — it hands the frontend short-lived
-  presigned PUT/GET URLs (`server/src/lib/r2.js`,
-  `server/src/routes/files.js`); the browser talks to R2 directly.
-- **File storage (project cover/gallery images)**: a separate, swappable
-  path — the backend *does* proxy these bytes, deliberately. The frontend
-  POSTs a multipart file straight to the Express backend
-  (`POST /api/projects/:id/images`), which validates it (MIME type + magic
-  bytes + 5MB cap — `server/src/lib/storage/index.js`) and hands the buffer
-  to a small storage abstraction (`server/src/lib/storage/`). Today's
-  implementation (`localDisk.js`) writes to this backend's own disk under
-  `server/public/images/projects/` and serves it back via `express.static`
-  — this is the *Express backend's* `public/`, not the Vite frontend's, and
-  it never touches Vercel's (ephemeral) runtime filesystem. Only the
-  resulting URL + a storage key are stored in Postgres (`project_images`
-  table) — never binary or base64. See `docs/DEPLOYMENT.md` for the
-  important caveat: this only survives redeploys if Render's disk for this
-  service has a Persistent Disk attached; swapping the one import in
-  `server/src/lib/storage/index.js` to an `s3.js` implementation (reusing
-  the R2 client above) removes that caveat without touching routes or the
-  DB schema.
+- **File storage (all of it — project cover/gallery images, project
+  files/documents, business logo)**: Cloudinary. The frontend POSTs a
+  multipart file straight to the Express backend, which validates it
+  (MIME type + extension + magic-byte sniffing + size cap —
+  `server/src/lib/storage/index.js` for images,
+  `server/src/lib/storage/fileValidation.js` for generic files) and hands
+  the buffer to `server/src/lib/cloudinary.js`
+  (`cloudinary.uploader.upload_stream`). Only the resulting `secure_url` +
+  Cloudinary `public_id` (stored in the `storage_key` column) are kept in
+  Postgres — never binary or base64. Durable identically in development
+  and production, no local-disk fallback, no bucket to configure. See
+  `docs/CLOUDINARY_SETUP.md`.
 - **PDF generation**: `pdfkit`, server-side, streamed from
   `GET /api/invoices/:id/pdf` (`server/src/lib/pdf.js`) — a real generated
   PDF, not a screenshot or client-side print.

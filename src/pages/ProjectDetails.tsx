@@ -8,12 +8,11 @@ import { StatusBadge } from '@/components/common/StatusBadge'
 import { Button } from '@/components/common/Button'
 import { Input, Select, TextArea } from '@/components/common/Input'
 import { Modal, ConfirmDialog } from '@/components/common/Modal'
-import { useProjects as useLegacyProjects } from '@/hooks/useStore'
 import { useToast } from '@/hooks/useToast'
 import { formatDate, todayISO } from '@/utils/format'
 import { ProjectStatus } from '@/types'
 import { ProjectVaultSummary } from '@/components/vault/ProjectVaultSummary'
-import { coreApi, isDesktop } from '@/data/coreClient'
+import { coreApi } from '@/data/coreClient'
 import { API_BASE_URL } from '@/auth/AuthContext'
 import type { ProjectFull, UpdateProject, ProjectNote, ProjectLinkRecord, ProjectFile, ProjectImage } from '@/data/coreTypes'
 
@@ -71,36 +70,10 @@ function fileToBase64(file: File): Promise<string> {
 export default function ProjectDetails() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const desktop = isDesktop()
   const { show } = useToast()
 
-  // ---------------- Browser-mode (localStorage demo data) ----------------
-  const [legacyProjects, setLegacyProjects] = useLegacyProjects()
-  const legacyProject = legacyProjects.find((p) => p.id === id)
-  const [legacyEditOpen, setLegacyEditOpen] = useState(false)
-  const [legacyConfirmDelete, setLegacyConfirmDelete] = useState(false)
-  const [legacyForm, setLegacyForm] = useState(legacyProject)
-
-  function openLegacyEdit() {
-    setLegacyForm(legacyProject)
-    setLegacyEditOpen(true)
-  }
-  function saveLegacyEdit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!legacyForm) return
-    setLegacyProjects(legacyProjects.map((p) => (p.id === legacyProject!.id ? { ...legacyForm, updatedAt: todayISO() } : p)))
-    setLegacyEditOpen(false)
-    show('Project updated')
-  }
-  function removeLegacy() {
-    setLegacyProjects(legacyProjects.filter((p) => p.id !== legacyProject!.id))
-    show('Project deleted')
-    navigate('/projects')
-  }
-
-  // ---------------- Desktop-mode (real backend) ----------------
   const [project, setProject] = useState<ProjectFull | null>(null)
-  const [loading, setLoading] = useState(desktop)
+  const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -124,7 +97,7 @@ export default function ProjectDetails() {
   const [staticImageSubmitting, setStaticImageSubmitting] = useState(false)
 
   async function loadProject() {
-    if (!desktop || !id) return
+    if (!id) return
     setLoading(true)
     try {
       const p = await coreApi.projectsGet(id)
@@ -141,7 +114,7 @@ export default function ProjectDetails() {
   }
 
   async function loadNotes() {
-    if (!desktop || !id) return
+    if (!id) return
     try {
       setNotes(await coreApi.projectNotesList(id))
     } catch (e) {
@@ -149,7 +122,7 @@ export default function ProjectDetails() {
     }
   }
   async function loadLinks() {
-    if (!desktop || !id) return
+    if (!id) return
     try {
       setLinks(await coreApi.projectLinksList(id))
     } catch (e) {
@@ -157,7 +130,7 @@ export default function ProjectDetails() {
     }
   }
   async function loadFiles() {
-    if (!desktop || !id) return
+    if (!id) return
     try {
       setFiles(await coreApi.projectFilesList(id))
     } catch (e) {
@@ -165,7 +138,7 @@ export default function ProjectDetails() {
     }
   }
   async function loadImages() {
-    if (!desktop || !id) return
+    if (!id) return
     try {
       setImages(await coreApi.projectImagesList(id))
     } catch (e) {
@@ -180,7 +153,7 @@ export default function ProjectDetails() {
     loadFiles()
     loadImages()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, desktop])
+  }, [id])
 
   function openEdit() {
     setForm(project)
@@ -276,25 +249,13 @@ export default function ProjectDetails() {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file || !id) return
-    if (file.size > 50 * 1024 * 1024) {
-      show('File is too large (50MB max).', 'error')
+    if (file.size > 20 * 1024 * 1024) {
+      show('File is too large (20MB max).', 'error')
       return
     }
     setUploading(true)
     try {
-      const { uploadUrl, storageKey } = await coreApi.projectFilesPresign(id, {
-        fileName: file.name,
-        contentType: file.type || undefined,
-        size: file.size,
-      })
-      const putRes = await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'application/octet-stream' } })
-      if (!putRes.ok) throw new Error('Upload to storage failed')
-      await coreApi.projectFilesConfirm(id, {
-        fileName: file.name,
-        contentType: file.type || undefined,
-        size: file.size,
-        storageKey,
-      })
+      await coreApi.projectFilesUpload(id, file)
       show('File uploaded')
       loadFiles()
     } catch (e) {
@@ -303,13 +264,8 @@ export default function ProjectDetails() {
       setUploading(false)
     }
   }
-  async function openFile(fileId: string) {
-    try {
-      const { url } = await coreApi.projectFilesDownloadUrl(fileId)
-      window.open(url, '_blank', 'noopener,noreferrer')
-    } catch (e) {
-      show(friendlyError(e), 'error')
-    }
+  function openFile(file: ProjectFile) {
+    if (file.url) window.open(file.url, '_blank', 'noopener,noreferrer')
   }
   async function confirmDeleteFile() {
     if (!deleteFileId) return
@@ -395,151 +351,6 @@ export default function ProjectDetails() {
   }
 
   // ============================= RENDER =============================
-
-  if (!desktop) {
-    if (!legacyProject) {
-      return (
-        <div className="text-center py-20">
-          <p className="text-sm text-ink-400">Project not found.</p>
-          <button onClick={() => navigate('/projects')} className="mt-3 text-sm text-accent-400 hover:text-accent-300">
-            Back to Projects
-          </button>
-        </div>
-      )
-    }
-
-    return (
-      <div className="max-w-4xl">
-        <button onClick={() => navigate('/projects')} className="inline-flex items-center gap-1.5 text-sm text-ink-400 hover:text-ink-100 mb-4 transition-colors">
-          <ArrowLeft size={14} /> Back to Projects
-        </button>
-
-        <div className="mb-4 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-400">
-          Demo data — open this app in Desktop Mode to save changes, notes, links and files permanently.
-        </div>
-
-        <div className="flex items-start justify-between mb-6">
-          <div>
-            <div className="flex items-center gap-2.5 mb-1">
-              <h1 className="text-xl font-semibold text-ink-100">{legacyProject.name}</h1>
-              <StatusBadge status={legacyProject.status} />
-            </div>
-            <p className="text-sm text-ink-400">{legacyProject.client}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" icon={<Pencil size={13} />} onClick={openLegacyEdit}>Edit</Button>
-            <Button variant="danger" size="sm" icon={<Trash2 size={13} />} onClick={() => setLegacyConfirmDelete(true)}>Delete</Button>
-          </div>
-        </div>
-
-        <div className="grid md:grid-cols-3 gap-4">
-          <div className="md:col-span-2 space-y-4">
-            <section className="rounded-xl border border-surface-400 bg-surface-200 p-4">
-              <h2 className="text-sm font-semibold text-ink-100 mb-2">Overview</h2>
-              <p className="text-sm text-ink-300 leading-relaxed">{legacyProject.description || 'No description added yet.'}</p>
-              <div className="flex items-center gap-1.5 flex-wrap mt-3">
-                {legacyProject.technology.map((t) => (
-                  <span key={t} className="text-[11px] font-medium text-ink-400 bg-surface-300 border border-surface-500 rounded px-2 py-0.5">
-                    {t}
-                  </span>
-                ))}
-              </div>
-            </section>
-
-            <section className="rounded-xl border border-surface-400 bg-surface-200 p-4">
-              <h2 className="text-sm font-semibold text-ink-100 mb-3">Links</h2>
-              <div className="space-y-2">
-                {linkFields.map(({ key, label, icon: Icon }) => {
-                  const value = legacyProject[key] as string | undefined
-                  return (
-                    <div key={key} className="flex items-center gap-2.5 text-sm">
-                      <Icon size={14} className="text-ink-500 shrink-0" />
-                      <span className="text-ink-500 w-36 shrink-0">{label}</span>
-                      {value ? (
-                        <a href={value} target="_blank" rel="noreferrer" className="text-accent-400 hover:text-accent-300 truncate">
-                          {value}
-                        </a>
-                      ) : (
-                        <span className="text-ink-600">Not set</span>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </section>
-
-            <section className="rounded-xl border border-surface-400 bg-surface-200 p-4">
-              <h2 className="text-sm font-semibold text-ink-100 mb-2">Notes</h2>
-              <p className="text-sm text-ink-300 leading-relaxed whitespace-pre-line">{legacyProject.notes || 'No notes yet.'}</p>
-            </section>
-          </div>
-
-          <div className="space-y-4">
-            <section className="rounded-xl border border-surface-400 bg-surface-200 p-4">
-              <h2 className="text-sm font-semibold text-ink-100 mb-3">Technology</h2>
-              <dl className="space-y-2 text-sm">
-                <div className="flex justify-between"><dt className="text-ink-500">Framework</dt><dd className="text-ink-200">{legacyProject.framework || '—'}</dd></div>
-                <div className="flex justify-between"><dt className="text-ink-500">Backend</dt><dd className="text-ink-200">{legacyProject.backend || '—'}</dd></div>
-                <div className="flex justify-between"><dt className="text-ink-500">Database</dt><dd className="text-ink-200">{legacyProject.database || '—'}</dd></div>
-                <div className="flex justify-between"><dt className="text-ink-500">Hosting</dt><dd className="text-ink-200">{legacyProject.hosting || '—'}</dd></div>
-              </dl>
-              <div className="text-xs text-ink-500 mt-3 pt-3 border-t border-surface-400">Last updated {formatDate(legacyProject.updatedAt)}</div>
-            </section>
-
-            <ProjectVaultSummary projectId={legacyProject.id} />
-          </div>
-        </div>
-
-        <Modal open={legacyEditOpen} onClose={() => setLegacyEditOpen(false)} title="Edit Project" size="lg">
-          {legacyForm && (
-            <form onSubmit={saveLegacyEdit} className="space-y-3 max-h-[70vh] overflow-y-auto scrollbar-thin pr-1">
-              <div className="grid sm:grid-cols-2 gap-3">
-                <Input label="Project name" value={legacyForm.name} onChange={(e) => setLegacyForm({ ...legacyForm, name: e.target.value })} />
-                <Input label="Client" value={legacyForm.client} onChange={(e) => setLegacyForm({ ...legacyForm, client: e.target.value })} />
-              </div>
-              <TextArea label="Description" rows={2} value={legacyForm.description} onChange={(e) => setLegacyForm({ ...legacyForm, description: e.target.value })} />
-              <div className="grid sm:grid-cols-2 gap-3">
-                <Select label="Status" value={legacyForm.status} onChange={(e) => setLegacyForm({ ...legacyForm, status: e.target.value as ProjectStatus })}>
-                  {(['Active', 'Planning', 'Completed', 'Archived'] as ProjectStatus[]).map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </Select>
-                <Input label="Technology (comma separated)" value={legacyForm.technology.join(', ')} onChange={(e) => setLegacyForm({ ...legacyForm, technology: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })} />
-              </div>
-              <div className="grid sm:grid-cols-2 gap-3">
-                <Input label="Framework" value={legacyForm.framework ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, framework: e.target.value })} />
-                <Input label="Backend" value={legacyForm.backend ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, backend: e.target.value })} />
-                <Input label="Database" value={legacyForm.database ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, database: e.target.value })} />
-                <Input label="Hosting" value={legacyForm.hosting ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, hosting: e.target.value })} />
-              </div>
-              <Input label="Website URL" value={legacyForm.websiteUrl ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, websiteUrl: e.target.value })} />
-              <Input label="GitHub URL" value={legacyForm.githubUrl ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, githubUrl: e.target.value })} />
-              <Input label="Deployment URL" value={legacyForm.deploymentUrl ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, deploymentUrl: e.target.value })} />
-              <Input label="Admin Panel URL" value={legacyForm.adminUrl ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, adminUrl: e.target.value })} />
-              <Input label="Documentation URL" value={legacyForm.docsUrl ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, docsUrl: e.target.value })} />
-              <TextArea label="Notes" rows={3} value={legacyForm.notes ?? ''} onChange={(e) => setLegacyForm({ ...legacyForm, notes: e.target.value })} />
-              <div className="flex items-center justify-end gap-2 pt-1 sticky bottom-0 bg-surface-200 pb-1">
-                <button type="button" onClick={() => setLegacyEditOpen(false)} className="rounded-lg border border-surface-500 bg-surface-300 px-3.5 py-2 text-sm text-ink-100 hover:bg-surface-400 transition-colors">
-                  Cancel
-                </button>
-                <Button type="submit">Save Changes</Button>
-              </div>
-            </form>
-          )}
-        </Modal>
-
-        <ConfirmDialog
-          open={legacyConfirmDelete}
-          title="Delete Project"
-          message={`Are you sure you want to delete "${legacyProject.name}"? This can't be undone.`}
-          confirmLabel="Delete"
-          danger
-          onConfirm={removeLegacy}
-          onCancel={() => setLegacyConfirmDelete(false)}
-        />
-      </div>
-    )
-  }
 
   // -------- Desktop mode render --------
 
@@ -750,10 +561,10 @@ export default function ProjectDetails() {
                 {files.map((f) => (
                   <div key={f.id} className="flex items-center gap-2.5 text-sm rounded-lg px-2 py-1.5 hover:bg-surface-300/50 group">
                     <FileText size={14} className="text-ink-500 shrink-0" />
-                    <span className="text-ink-200 truncate flex-1">{f.original_name}</span>
+                    <span className="text-ink-200 truncate flex-1">{f.file_name}</span>
                     <span className="text-ink-600 text-xs shrink-0">{formatBytes(f.file_size)}</span>
                     <span className="text-ink-600 text-xs shrink-0 w-20 text-right">{formatDate(f.created_at)}</span>
-                    <button onClick={() => openFile(f.id)} title="Open" className="text-ink-500 hover:text-accent-400 shrink-0">
+                    <button onClick={() => openFile(f)} title="Open" className="text-ink-500 hover:text-accent-400 shrink-0">
                       <Download size={13} />
                     </button>
                     <button onClick={() => setDeleteFileId(f.id)} title="Delete" className="text-ink-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">

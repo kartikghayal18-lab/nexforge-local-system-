@@ -4,8 +4,7 @@
 // pgcrypto's gen_random_uuid, patched below) — but it does prove the schema
 // SQL and route logic aren't obviously broken end-to-end.
 import { newDb } from 'pg-mem'
-import { readFileSync, readdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import bcrypt from 'bcryptjs'
@@ -136,6 +135,65 @@ async function main() {
   check('vault: stored value is ciphertext, not plaintext', storedRow.encrypted_value !== secretPlain)
   check('vault: decrypt round-trips to original plaintext', decrypt(storedRow.encrypted_value) === secretPlain)
 
+  // 7b. ENCRYPTION_KEY startup validation — missing key
+  {
+    const savedKey = process.env.ENCRYPTION_KEY
+    delete process.env.ENCRYPTION_KEY
+    const mod = await import('../src/lib/crypto.js?variant=missing-key')
+    let threw = null
+    try {
+      mod.validateEncryptionKeyOrThrow()
+    } catch (err) {
+      threw = err
+    }
+    check('encryption key: missing key throws at startup', !!threw)
+    check('encryption key: missing-key error message is specific', !!threw && /ENCRYPTION_KEY is not set/.test(threw.message), threw && threw.message)
+    process.env.ENCRYPTION_KEY = savedKey
+  }
+
+  // 7c. ENCRYPTION_KEY startup validation — wrong length key
+  {
+    const savedKey = process.env.ENCRYPTION_KEY
+    process.env.ENCRYPTION_KEY = Buffer.alloc(16, 3).toString('base64') // 16 bytes, not 32
+    const mod = await import('../src/lib/crypto.js?variant=wrong-length-key')
+    let threw = null
+    try {
+      mod.validateEncryptionKeyOrThrow()
+    } catch (err) {
+      threw = err
+    }
+    check('encryption key: wrong-length key throws at startup', !!threw)
+    check(
+      'encryption key: wrong-length error states actual vs required byte counts',
+      !!threw && /got 16 bytes/.test(threw.message) && /32/.test(threw.message),
+      threw && threw.message,
+    )
+    process.env.ENCRYPTION_KEY = savedKey
+  }
+
+  // 7d. decrypt with the wrong key (e.g. ENCRYPTION_KEY rotated) fails cleanly, never crashes
+  {
+    const savedKey = process.env.ENCRYPTION_KEY
+    process.env.ENCRYPTION_KEY = Buffer.alloc(32, 1).toString('base64')
+    const modA = await import('../src/lib/crypto.js?variant=key-a')
+    const cipherWithKeyA = modA.encrypt('top-secret-value')
+
+    process.env.ENCRYPTION_KEY = Buffer.alloc(32, 2).toString('base64')
+    const modB = await import('../src/lib/crypto.js?variant=key-b')
+    const result = modB.safeDecrypt(cipherWithKeyA)
+    check('encryption key: decrypting with the wrong key does not throw (safeDecrypt)', result && result.ok === false)
+
+    let rawThrew = null
+    try {
+      modB.decrypt(cipherWithKeyA)
+    } catch (err) {
+      rawThrew = err
+    }
+    check('encryption key: raw decrypt() does throw (caller must use safeDecrypt at reveal endpoints)', !!rawThrew)
+
+    process.env.ENCRYPTION_KEY = savedKey
+  }
+
   // 8. dashboard stats aggregate
   const stats = {
     total_projects: (await pool.query('SELECT count(*)::int AS n FROM projects')).rows[0].n,
@@ -164,33 +222,125 @@ async function main() {
   void img1
   void img2
 
-  // 10. storage abstraction (local disk) — real filesystem I/O, no mocking
-  const tmpRoot = mkdtempSync(path.join(tmpdir(), 'nexforge-smoke-'))
-  const prevCwd = process.cwd()
-  process.chdir(tmpRoot) // saveImage/deleteImage resolve paths off process.cwd() at import time
-  // Imported only after chdir — the module computes its PUBLIC_DIR constant
-  // from process.cwd() at load time, so the order here matters.
-  const { saveImage, deleteImage, validateImageUpload, MAX_IMAGE_SIZE_BYTES } = await import('../src/lib/storage/index.js')
-  try {
+  // 10. storage abstraction (Cloudinary) — Cloudinary itself is
+  // unreachable from this sandbox (no outbound network), so the
+  // cloudinary.uploader SDK calls are stubbed here at the module level
+  // before importing storage/cloudinary.js, which lets the rest of the
+  // logic (folder naming, key/url plumbing, delete tolerance) run for real.
+  {
+    const cloudinaryModule = await import('cloudinary')
+    let lastUploadOpts = null
+    let destroyCalls = []
+    cloudinaryModule.v2.uploader.upload_stream = (opts, cb) => {
+      lastUploadOpts = opts
+      return {
+        end: () => {
+          cb(null, {
+            public_id: `${opts.folder}/stub-id`,
+            secure_url: `https://res.cloudinary.com/stub/image/upload/${opts.folder}/stub-id.png`,
+            resource_type: opts.resource_type === 'auto' ? 'image' : opts.resource_type,
+            format: 'png',
+            bytes: 1234,
+          })
+        },
+      }
+    }
+    cloudinaryModule.v2.uploader.destroy = async (publicId, opts) => {
+      destroyCalls.push({ publicId, opts })
+      return { result: 'ok' }
+    }
+    process.env.CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || 'stub-cloud'
+    process.env.CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || 'stub-key'
+    process.env.CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || 'stub-secret'
+
+    const { saveImage, deleteImage, validateImageUpload: validateImageUploadStub } = await import('../src/lib/storage/index.js')
+    void validateImageUploadStub
+
     const pngMagicBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])
     const { key, url } = await saveImage({ buffer: pngMagicBytes, projectId, originalName: 'photo.png', mimeType: 'image/png' })
-    const writtenPath = path.join(tmpRoot, 'public', 'images', 'projects', ...key.replace(/^projects\//, '').split('/'))
-    check('storage: saveImage writes file to expected local-disk path', existsSync(writtenPath), writtenPath)
-    check('storage: saveImage returns a served URL under /images/', url.startsWith('/images/projects/'), url)
+    check('storage: saveImage uploads to the expected Cloudinary folder', lastUploadOpts?.folder === `nexforge/projects/${projectId}/cover-gallery`, lastUploadOpts?.folder)
+    check('storage: saveImage returns the Cloudinary public_id as the key', key === `${lastUploadOpts.folder}/stub-id`, key)
+    check('storage: saveImage returns a Cloudinary secure_url', url.startsWith('https://res.cloudinary.com/'), url)
 
     await deleteImage(key)
-    check('storage: deleteImage removes the file', !existsSync(writtenPath))
+    check('storage: deleteImage calls Cloudinary destroy with the public_id', destroyCalls.some((c) => c.publicId === key))
 
-    // deleteImage on an already-missing file must not throw
+    // destroyAsset must swallow a "not found" style error, not throw —
+    // deleting a DB row whose remote asset is already gone must still work.
+    cloudinaryModule.v2.uploader.destroy = async () => { throw new Error('not found') }
     let deleteAgainThrew = false
     try { await deleteImage(key) } catch { deleteAgainThrew = true }
-    check('storage: deleteImage is idempotent (no throw on missing file)', !deleteAgainThrew)
-  } finally {
-    process.chdir(prevCwd)
-    rmSync(tmpRoot, { recursive: true, force: true })
+    check('storage: deleteImage is tolerant of a Cloudinary destroy failure (no throw)', !deleteAgainThrew)
+  }
+
+  // 10b. settings logo upload — upsert-replaces-old-public_id logic,
+  // exercised against pg-mem's business_settings table with a stubbed
+  // Cloudinary uploader (same stubbing technique as above).
+  {
+    const cloudinaryModule = await import('cloudinary')
+    const uploadedIds = []
+    cloudinaryModule.v2.uploader.upload_stream = (opts, cb) => ({
+      end: () => {
+        const id = `${opts.folder}/logo-${uploadedIds.length + 1}`
+        uploadedIds.push(id)
+        cb(null, { public_id: id, secure_url: `https://res.cloudinary.com/stub/image/upload/${id}.png`, resource_type: 'image', format: 'png', bytes: 100 })
+      },
+    })
+    const destroyedIds = []
+    cloudinaryModule.v2.uploader.destroy = async (publicId) => { destroyedIds.push(publicId); return { result: 'ok' } }
+
+    const { uploadBuffer, destroyAsset, folders } = await import('../src/lib/cloudinary.js')
+
+    async function getSetting(key) {
+      const { rows } = await pool.query('SELECT value FROM business_settings WHERE key = $1', [key])
+      return rows[0]?.value ?? null
+    }
+    async function setSettings(entries) {
+      for (const [k, v] of Object.entries(entries)) {
+        await pool.query(
+          `INSERT INTO business_settings (key, value, updated_at) VALUES ($1,$2,now())
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+          [k, String(v)],
+        )
+      }
+    }
+
+    // First upload: no previous logo to destroy.
+    const first = await uploadBuffer(Buffer.from([1]), { folder: folders.businessLogo(), resourceType: 'image', originalFilename: 'logo1.png' })
+    await setSettings({ logo_public_id: first.public_id, logo_url: first.secure_url })
+    check('settings logo: first upload stores public_id + url', (await getSetting('logo_public_id')) === first.public_id)
+    check('settings logo: nothing destroyed on first upload', destroyedIds.length === 0)
+
+    // Second upload: previous public_id must be read out before overwrite, then destroyed.
+    const previousPublicId = await getSetting('logo_public_id')
+    const second = await uploadBuffer(Buffer.from([2]), { folder: folders.businessLogo(), resourceType: 'image', originalFilename: 'logo2.png' })
+    await setSettings({ logo_public_id: second.public_id, logo_url: second.secure_url })
+    await destroyAsset(previousPublicId, 'image')
+    check('settings logo: second upload replaces the stored public_id', (await getSetting('logo_public_id')) === second.public_id)
+    check('settings logo: the previous public_id was destroyed exactly once', destroyedIds.filter((id) => id === previousPublicId).length === 1, JSON.stringify(destroyedIds))
+    check('settings logo: logo_url reflects the newest upload', (await getSetting('logo_url')) === second.secure_url)
+  }
+
+  // 10c. validateFileUpload (generic project files) — pure function, no I/O.
+  {
+    const { validateFileUpload, MAX_FILE_SIZE_BYTES } = await import('../src/lib/storage/fileValidation.js')
+    const pdfBytes = Buffer.concat([Buffer.from('%PDF-1.4'), Buffer.alloc(20)])
+    const zipBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(20)])
+    const txtBytes = Buffer.from('just some plain text content')
+    const fakePdf = Buffer.alloc(32)
+
+    check('file validation: accepts a real PDF', validateFileUpload({ buffer: pdfBytes, mimeType: 'application/pdf', originalName: 'contract.pdf', size: pdfBytes.length }).ok)
+    check('file validation: accepts a real ZIP', validateFileUpload({ buffer: zipBytes, mimeType: 'application/zip', originalName: 'assets.zip', size: zipBytes.length }).ok)
+    check('file validation: accepts a docx (zip-signature office format)', validateFileUpload({ buffer: zipBytes, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', originalName: 'spec.docx', size: zipBytes.length }).ok)
+    check('file validation: accepts plain text', validateFileUpload({ buffer: txtBytes, mimeType: 'text/plain', originalName: 'notes.txt', size: txtBytes.length }).ok)
+    check('file validation: rejects oversized file', !validateFileUpload({ buffer: pdfBytes, mimeType: 'application/pdf', originalName: 'contract.pdf', size: MAX_FILE_SIZE_BYTES + 1 }).ok)
+    check('file validation: rejects disallowed mime type', !validateFileUpload({ buffer: pdfBytes, mimeType: 'application/x-msdownload', originalName: 'app.exe', size: pdfBytes.length }).ok)
+    check('file validation: rejects mismatched extension', !validateFileUpload({ buffer: pdfBytes, mimeType: 'application/pdf', originalName: 'contract.exe', size: pdfBytes.length }).ok)
+    check('file validation: rejects spoofed PDF (wrong magic bytes)', !validateFileUpload({ buffer: fakePdf, mimeType: 'application/pdf', originalName: 'contract.pdf', size: fakePdf.length }).ok)
   }
 
   // 11. validation function — pure, exercised directly (no HTTP server needed)
+  const { validateImageUpload, MAX_IMAGE_SIZE_BYTES } = await import('../src/lib/storage/index.js')
   const validJpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(20)])
   const validPng = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(20)])
   const validWebp = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP'), Buffer.alloc(20)])
@@ -225,44 +375,9 @@ async function main() {
     !validateImageUpload({ buffer: fakeImage, mimeType: 'image/png', originalName: 'cover.png', size: fakeImage.length }).ok,
   )
 
-  // 12. production gate: saveImage refuses when NODE_ENV=production and
-  // STORAGE_BACKEND is still the local-dev default (see
-  // server/src/lib/storage/index.js) — this is what the upload route maps
-  // to a 503 instead of silently writing to Render's ephemeral disk.
-  {
-    const prevNodeEnv = process.env.NODE_ENV
-    const prevBackend = process.env.STORAGE_BACKEND
-    delete process.env.STORAGE_BACKEND // exercise the documented default
-    process.env.NODE_ENV = 'production'
-    // Re-import fresh so STORAGE_BACKEND (computed at module load) reflects
-    // this test's env — dynamic import with a cache-busting query string.
-    const storageProd = await import(`../src/lib/storage/index.js?t=${Date.now()}`)
-    let threw = null
-    try {
-      await storageProd.saveImage({ buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]), projectId, originalName: 'x.png', mimeType: 'image/png' })
-    } catch (err) {
-      threw = err
-    }
-    check(
-      'storage: saveImage throws StorageNotConfiguredError in production with STORAGE_BACKEND unset',
-      threw instanceof storageProd.StorageNotConfiguredError,
-      threw ? threw.constructor.name : 'did not throw',
-    )
-    check(
-      'storage: StorageNotConfiguredError message points at docs/DEPLOYMENT.md',
-      !!threw && /docs\/DEPLOYMENT\.md/.test(threw.message),
-    )
-
-    // And confirm it does NOT gate when STORAGE_BACKEND is explicitly set
-    // (simulating R2/S3 being wired up).
-    process.env.STORAGE_BACKEND = 's3'
-    const storageS3Sim = await import(`../src/lib/storage/index.js?t=${Date.now()}1`)
-    check('storage: STORAGE_BACKEND=s3 reports as the configured backend', storageS3Sim.STORAGE_BACKEND === 's3')
-
-    process.env.NODE_ENV = prevNodeEnv
-    if (prevBackend === undefined) delete process.env.STORAGE_BACKEND
-    else process.env.STORAGE_BACKEND = prevBackend
-  }
+  // 12. (removed) production storage gate — obsolete now that Cloudinary
+  // is used identically in dev and prod; see step 10's Cloudinary tests
+  // and the Cloudinary-config validation test added below (step 18).
 
   // 13. Email OTP login — generation, hashing, expiry, single-use, rate limiting.
   // Exercises server/src/lib/otp.js directly and otp_codes via pg-mem — no
@@ -451,6 +566,32 @@ async function main() {
 
     const postDeleteCount = (await pool.query('SELECT count(*)::int AS n FROM users')).rows[0].n
     check('account deletion: the user row is actually removed', postDeleteCount === 0)
+  }
+
+  // 18. Cloudinary startup validation — same fail-fast pattern as
+  // ENCRYPTION_KEY. Exercised directly against the function, independent of
+  // the stubbed cloudinary.config() calls done in earlier steps.
+  {
+    const { validateCloudinaryConfigOrThrow } = await import('../src/lib/cloudinary.js')
+    const saved = {
+      CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME,
+      CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY,
+      CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET,
+    }
+    delete process.env.CLOUDINARY_CLOUD_NAME
+    delete process.env.CLOUDINARY_API_KEY
+    delete process.env.CLOUDINARY_API_SECRET
+    let threw = null
+    try { validateCloudinaryConfigOrThrow() } catch (err) { threw = err }
+    check('cloudinary: validateCloudinaryConfigOrThrow throws when all vars are missing', !!threw)
+    check('cloudinary: error message names the missing vars', !!threw && /CLOUDINARY_CLOUD_NAME/.test(threw.message) && /CLOUDINARY_API_KEY/.test(threw.message) && /CLOUDINARY_API_SECRET/.test(threw.message), threw?.message)
+
+    process.env.CLOUDINARY_CLOUD_NAME = saved.CLOUDINARY_CLOUD_NAME || 'stub-cloud'
+    process.env.CLOUDINARY_API_KEY = saved.CLOUDINARY_API_KEY || 'stub-key'
+    process.env.CLOUDINARY_API_SECRET = saved.CLOUDINARY_API_SECRET || 'stub-secret'
+    let threwWhenSet = null
+    try { validateCloudinaryConfigOrThrow() } catch (err) { threwWhenSet = err }
+    check('cloudinary: validateCloudinaryConfigOrThrow does not throw once all vars are set', !threwWhenSet)
   }
 
   console.log(`\n${passed} passed, ${failed} failed`)

@@ -84,6 +84,7 @@ export interface ProjectNote {
   updated_at: string
 }
 export type NewProjectNote = Omit<ProjectNote, 'id' | 'created_at' | 'updated_at'>
+export type ProjectNoteWithProject = ProjectNote & { project_name: string }
 export type UpdateProjectNote = Pick<ProjectNote, 'id' | 'title' | 'content'>
 
 export interface ProjectImage {
@@ -101,11 +102,14 @@ export interface ProjectImage {
 export interface ProjectFile {
   id: string
   project_id: string
-  name: string
-  original_name: string
+  file_name: string
   file_type: string | null
   file_size: number
+  storage_key: string
+  url: string | null
   category: string | null
+  resource_type: string | null
+  format: string | null
   created_at: string
 }
 

@@ -48,11 +48,22 @@ export function createApp() {
 
   // Centralized error handler — never leak stack traces to clients.
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
-    // Multer (image upload) errors — e.g. file too large — should read as a
-    // normal 400 validation error, not a 500.
+    // Multer (image/file upload) errors — e.g. file too large — should
+    // read as a normal 400 validation error, not a 500.
     if (err && err.name === 'MulterError') {
-      const message = err.code === 'LIMIT_FILE_SIZE' ? 'Image is too large' : err.message
+      const message = err.code === 'LIMIT_FILE_SIZE' ? 'File is too large' : err.message
       return res.status(400).json({ error: message })
+    }
+    // Cloudinary SDK errors carry an http_code (e.g. 400 invalid image,
+    // 401 bad credentials, 420 rate limited) — surface those as a clean
+    // 400/502 JSON response instead of a generic 500. A client-shaped
+    // failure (bad file, invalid params) maps to 400; anything else
+    // (auth/rate-limit/upstream trouble) maps to 502 since it's this
+    // server's Cloudinary config or Cloudinary itself, not the caller.
+    if (err && typeof err.http_code === 'number') {
+      const status = err.http_code >= 400 && err.http_code < 500 ? 400 : 502
+      console.error('[api] Cloudinary error:', err.http_code, err.message)
+      return res.status(status).json({ error: 'Upload failed: ' + (err.message || 'storage provider error') })
     }
     console.error('[api] unhandled error:', err)
     res.status(500).json({ error: 'Internal server error' })

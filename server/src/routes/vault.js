@@ -1,8 +1,22 @@
 import { Router } from 'express'
 import { pool } from '../db/pool.js'
-import { encrypt, decrypt, mask } from '../lib/crypto.js'
+import { encrypt, mask, safeDecrypt } from '../lib/crypto.js'
 
 const router = Router()
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+// project_id is nullable at the DB level (a secret/password/db credential
+// can be "unassigned"), but if the client DOES send one it must be a real
+// UUID — never silently accept a malformed value (e.g. an empty string or
+// stray object) that would otherwise insert as NULL or break the FK.
+function validateProjectId(req, res, next) {
+  const v = req.body?.project_id
+  if (v === undefined || v === null) return next()
+  if (typeof v !== 'string' || !UUID_RE.test(v)) {
+    return res.status(400).json({ error: 'project_id must be a valid project UUID or null' })
+  }
+  next()
+}
 
 // ---------------- Secrets ----------------
 router.get('/secrets', async (req, res) => {
@@ -16,7 +30,7 @@ router.get('/secrets', async (req, res) => {
   })))
 })
 
-router.post('/secrets', async (req, res) => {
+router.post('/secrets', validateProjectId, async (req, res) => {
   const b = req.body || {}
   const { rows } = await pool.query(
     'INSERT INTO project_secrets (project_id, name, category, environment, encrypted_value, notes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id',
@@ -50,7 +64,9 @@ router.delete('/secrets/:id', async (req, res) => {
 router.get('/secrets/:id/reveal', async (req, res) => {
   const { rows } = await pool.query('SELECT encrypted_value FROM project_secrets WHERE id = $1', [req.params.id])
   if (!rows.length) return res.status(404).json({ error: 'not found' })
-  res.json({ value: decrypt(rows[0].encrypted_value) })
+  const result = safeDecrypt(rows[0].encrypted_value)
+  if (!result.ok) return res.status(400).json({ error: 'Unable to decrypt this value' })
+  res.json({ value: result.value })
 })
 
 // ---------------- Passwords ----------------
@@ -65,7 +81,7 @@ router.get('/passwords', async (req, res) => {
   })))
 })
 
-router.post('/passwords', async (req, res) => {
+router.post('/passwords', validateProjectId, async (req, res) => {
   const b = req.body || {}
   const { rows } = await pool.query(
     'INSERT INTO project_passwords (project_id, title, username, encrypted_password, website_url, environment, notes) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
@@ -98,7 +114,9 @@ router.delete('/passwords/:id', async (req, res) => {
 router.get('/passwords/:id/reveal', async (req, res) => {
   const { rows } = await pool.query('SELECT encrypted_password FROM project_passwords WHERE id = $1', [req.params.id])
   if (!rows.length) return res.status(404).json({ error: 'not found' })
-  res.json({ value: decrypt(rows[0].encrypted_password) })
+  const result = safeDecrypt(rows[0].encrypted_password)
+  if (!result.ok) return res.status(400).json({ error: 'Unable to decrypt this value' })
+  res.json({ value: result.value })
 })
 
 // ---------------- Databases ----------------
@@ -115,7 +133,7 @@ router.get('/databases', async (req, res) => {
   })))
 })
 
-router.post('/databases', async (req, res) => {
+router.post('/databases', validateProjectId, async (req, res) => {
   const b = req.body || {}
   const { rows } = await pool.query(
     `INSERT INTO project_databases (project_id, name, provider, host, port, database_name, username, encrypted_connection_string, encrypted_password, environment)
@@ -147,10 +165,19 @@ router.delete('/databases/:id', async (req, res) => {
 router.get('/databases/:id/reveal', async (req, res) => {
   const { rows } = await pool.query('SELECT encrypted_connection_string, encrypted_password FROM project_databases WHERE id = $1', [req.params.id])
   if (!rows.length) return res.status(404).json({ error: 'not found' })
-  res.json({
-    connection_string: rows[0].encrypted_connection_string ? decrypt(rows[0].encrypted_connection_string) : null,
-    password: rows[0].encrypted_password ? decrypt(rows[0].encrypted_password) : null,
-  })
+  let connection_string = null
+  let password = null
+  if (rows[0].encrypted_connection_string) {
+    const r = safeDecrypt(rows[0].encrypted_connection_string)
+    if (!r.ok) return res.status(400).json({ error: 'Unable to decrypt this value' })
+    connection_string = r.value
+  }
+  if (rows[0].encrypted_password) {
+    const r = safeDecrypt(rows[0].encrypted_password)
+    if (!r.ok) return res.status(400).json({ error: 'Unable to decrypt this value' })
+    password = r.value
+  }
+  res.json({ connection_string, password })
 })
 
 export default router

@@ -6,6 +6,8 @@ import { vaultApi } from '@/vault/tauriClient'
 import { useToast } from '@/hooks/useToast'
 import { SECRET_CATEGORIES, VAULT_ENVIRONMENTS, SecretRecord } from '@/vault/types'
 import { ENV_PRESETS, guessCategoryForKey } from '@/vault/envPresets'
+import { useProjectPicker } from './useProjectPicker'
+import { useNavigate } from 'react-router-dom'
 
 interface Props {
   open: boolean
@@ -17,6 +19,8 @@ interface Props {
 
 export function AddSecretModal({ open, onClose, projectId, onSaved, editing }: Props) {
   const { show } = useToast()
+  const navigate = useNavigate()
+  const picker = useProjectPicker(projectId)
   const [name, setName] = useState(editing?.name ?? '')
   const [category, setCategory] = useState(editing?.category ?? 'API Key')
   const [environment, setEnvironment] = useState(editing?.environment ?? 'Production')
@@ -44,6 +48,10 @@ export function AddSecretModal({ open, onClose, projectId, onSaved, editing }: P
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim()) return
+    if (!editing && !picker.canSubmit) {
+      show('Choose a project first', 'error')
+      return
+    }
     setBusy(true)
     try {
       if (editing) {
@@ -63,7 +71,7 @@ export function AddSecretModal({ open, onClose, projectId, onSaved, editing }: P
           return
         }
         await vaultApi.secretsCreate({
-          project_id: projectId,
+          project_id: picker.resolvedProjectId,
           name: name.trim().toUpperCase().replace(/\s+/g, '_'),
           category,
           environment,
@@ -84,6 +92,20 @@ export function AddSecretModal({ open, onClose, projectId, onSaved, editing }: P
   return (
     <Modal open={open} onClose={onClose} title={editing ? 'Edit Variable' : 'Add Variable'} size="md">
       <form onSubmit={submit} className="space-y-3">
+        {!editing && picker.needsPicker && (
+          picker.noProjects ? (
+            <p className="text-xs text-amber-400">
+              You need a project first. <button type="button" onClick={() => navigate('/projects?new=1')} className="underline hover:text-amber-300">Create a project</button>
+            </p>
+          ) : (
+            <Select label="Project" required value={picker.selected} onChange={(e) => picker.setSelected(e.target.value)}>
+              <option value="">Select a project…</option>
+              {picker.projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </Select>
+          )
+        )}
         {!editing && (
           <div>
             <span className="block text-xs font-medium text-ink-400 mb-1.5">Quick presets</span>
@@ -145,7 +167,7 @@ export function AddSecretModal({ open, onClose, projectId, onSaved, editing }: P
           <button type="button" onClick={onClose} className="rounded-lg border border-surface-500 bg-surface-300 px-3.5 py-2 text-sm text-ink-100 hover:bg-surface-400 transition-colors">
             Cancel
           </button>
-          <Button type="submit" disabled={busy}>{busy ? 'Saving…' : editing ? 'Save Changes' : 'Add Variable'}</Button>
+          <Button type="submit" disabled={busy || (!editing && !picker.canSubmit)}>{busy ? 'Saving…' : editing ? 'Save Changes' : 'Add Variable'}</Button>
         </div>
       </form>
     </Modal>

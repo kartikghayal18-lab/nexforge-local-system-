@@ -7,10 +7,11 @@
 | `DATABASE_URL` | yes | Neon Postgres connection string, e.g. `postgres://user:pass@host/db?sslmode=require` |
 | `JWT_SECRET` | yes | Long random string. Signs/verifies login tokens. |
 | `ENCRYPTION_KEY` | yes | 32 random bytes, base64-encoded (`openssl rand -base64 32`). Used for AES-256-GCM vault encryption. Losing/rotating this makes existing vault rows undecryptable. |
-| `R2_ACCOUNT_ID` | yes (for files) | Cloudflare account ID. |
-| `R2_ACCESS_KEY_ID` | yes (for files) | R2 API token access key. |
-| `R2_SECRET_ACCESS_KEY` | yes (for files) | R2 API token secret. |
-| `R2_BUCKET_NAME` | yes (for files) | Bucket used for project files + business logo. |
+| `CLOUDINARY_CLOUD_NAME` | yes | Cloudinary cloud name. See `docs/CLOUDINARY_SETUP.md`. |
+| `CLOUDINARY_API_KEY` | yes | Cloudinary API key. |
+| `CLOUDINARY_API_SECRET` | yes | Cloudinary API secret. |
+| `IMAGE_MAX_SIZE_MB` | no | Defaults to 5. Caps project/logo image uploads. |
+| `FILE_MAX_SIZE_MB` | no | Defaults to 20. Caps generic project file uploads. |
 | `CORS_ORIGIN` | yes | Exact Vercel origin, e.g. `https://nexforge.vercel.app`. |
 | `PORT` | no | Defaults to 4000 (Render sets its own `PORT` automatically). |
 | `INVOICE_PREFIX` | no | Defaults to `INV`. Used in `PREFIX-YEAR-NNN` numbering. |

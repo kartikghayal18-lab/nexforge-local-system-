@@ -6,6 +6,8 @@ import { vaultApi } from '@/vault/tauriClient'
 import { useToast } from '@/hooks/useToast'
 import { VAULT_ENVIRONMENTS, PasswordRecord } from '@/vault/types'
 import { PasswordGeneratorPanel } from './PasswordGenerator'
+import { useProjectPicker } from './useProjectPicker'
+import { useNavigate } from 'react-router-dom'
 
 interface Props {
   open: boolean
@@ -17,6 +19,8 @@ interface Props {
 
 export function AddPasswordModal({ open, onClose, projectId, onSaved, editing }: Props) {
   const { show } = useToast()
+  const navigate = useNavigate()
+  const picker = useProjectPicker(projectId)
   const [title, setTitle] = useState(editing?.title ?? '')
   const [username, setUsername] = useState(editing?.username ?? '')
   const [websiteUrl, setWebsiteUrl] = useState(editing?.website_url ?? '')
@@ -43,6 +47,10 @@ export function AddPasswordModal({ open, onClose, projectId, onSaved, editing }:
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (!title.trim()) return
+    if (!editing && !picker.canSubmit) {
+      show('Choose a project first', 'error')
+      return
+    }
     setBusy(true)
     try {
       if (editing) {
@@ -63,7 +71,7 @@ export function AddPasswordModal({ open, onClose, projectId, onSaved, editing }:
           return
         }
         await vaultApi.passwordsCreate({
-          project_id: projectId,
+          project_id: picker.resolvedProjectId,
           title: title.trim(),
           username: username || null,
           password,
@@ -85,6 +93,20 @@ export function AddPasswordModal({ open, onClose, projectId, onSaved, editing }:
   return (
     <Modal open={open} onClose={onClose} title={editing ? 'Edit Password' : 'Add Password'} size="md">
       <form onSubmit={submit} className="space-y-3">
+        {!editing && picker.needsPicker && (
+          picker.noProjects ? (
+            <p className="text-xs text-amber-400">
+              You need a project first. <button type="button" onClick={() => navigate('/projects?new=1')} className="underline hover:text-amber-300">Create a project</button>
+            </p>
+          ) : (
+            <Select label="Project" required value={picker.selected} onChange={(e) => picker.setSelected(e.target.value)}>
+              <option value="">Select a project…</option>
+              {picker.projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </Select>
+          )
+        )}
         <Input label="Title / Service" required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Firebase Console" />
         <div className="grid grid-cols-2 gap-3">
           <Input label="Username / Email" value={username} onChange={(e) => setUsername(e.target.value)} />
@@ -135,7 +157,7 @@ export function AddPasswordModal({ open, onClose, projectId, onSaved, editing }:
           <button type="button" onClick={onClose} className="rounded-lg border border-surface-500 bg-surface-300 px-3.5 py-2 text-sm text-ink-100 hover:bg-surface-400 transition-colors">
             Cancel
           </button>
-          <Button type="submit" disabled={busy}>{busy ? 'Saving…' : editing ? 'Save Changes' : 'Add Password'}</Button>
+          <Button type="submit" disabled={busy || (!editing && !picker.canSubmit)}>{busy ? 'Saving…' : editing ? 'Save Changes' : 'Add Password'}</Button>
         </div>
       </form>
     </Modal>

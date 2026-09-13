@@ -1,10 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search, FolderKanban, FileText, Users, KeyRound, Lock, Database as DbIcon, StickyNote, Paperclip } from 'lucide-react'
-import { useProjects, useInvoices, useClients } from '@/hooks/useStore'
-import { useVault } from '@/vault/VaultContext'
 import { vaultApi } from '@/vault/tauriClient'
-import { coreApi, isDesktop } from '@/data/coreClient'
+import { coreApi } from '@/data/coreClient'
 import type { ProjectFull, Invoice as DbInvoice, Client as DbClient, ProjectNote, ProjectFile } from '@/data/coreTypes'
 
 interface Result {
@@ -17,27 +15,19 @@ interface Result {
 
 export function GlobalSearch() {
   const navigate = useNavigate()
-  const desktop = isDesktop()
 
-  // Browser-mode demo data
-  const [legacyProjects] = useProjects()
-  const [legacyInvoices] = useInvoices()
-  const [legacyClients] = useClients()
-
-  // Desktop-mode real data, fetched once and filtered client-side.
+  // Fetched once and filtered client-side.
   const [dbProjects, setDbProjects] = useState<ProjectFull[]>([])
   const [dbInvoices, setDbInvoices] = useState<DbInvoice[]>([])
   const [dbClients, setDbClients] = useState<DbClient[]>([])
   const [dbNotes, setDbNotes] = useState<(ProjectNote & { project_name: string })[]>([])
   const [dbFiles, setDbFiles] = useState<(ProjectFile & { project_name: string })[]>([])
 
-  const { desktop: vaultDesktop, unlocked } = useVault()
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [vaultNames, setVaultNames] = useState<{ secrets: { id: string; name: string; project_id: string | null }[]; passwords: { id: string; title: string; project_id: string | null }[]; databases: { id: string; name: string; project_id: string | null }[] }>({ secrets: [], passwords: [], databases: [] })
 
   useEffect(() => {
-    if (!vaultDesktop || !unlocked) return
     // Metadata only — names/titles never values — fetched once and filtered client-side.
     Promise.all([vaultApi.secretsList(null), vaultApi.passwordsList(null), vaultApi.databasesList(null)]).then(([s, p, d]) => {
       setVaultNames({
@@ -46,10 +36,9 @@ export function GlobalSearch() {
         databases: d.map((x) => ({ id: x.id, name: x.name, project_id: x.project_id })),
       })
     }).catch(() => {})
-  }, [vaultDesktop, unlocked])
+  }, [])
 
   useEffect(() => {
-    if (!desktop) return
     ;(async () => {
       try {
         const [projects, invoices, clients] = await Promise.all([
@@ -69,15 +58,14 @@ export function GlobalSearch() {
         console.error(e)
       }
     })()
-  }, [desktop])
+  }, [])
 
   const results = useMemo<Result[]>(() => {
     const q = query.trim().toLowerCase()
     if (!q) return []
     const out: Result[] = []
 
-    if (desktop) {
-      dbProjects.filter((p) => p.name.toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q)).slice(0, 4).forEach((p) => {
+    dbProjects.filter((p) => p.name.toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q)).slice(0, 4).forEach((p) => {
         out.push({ id: `proj-${p.id}`, label: p.name, sublabel: 'Project', icon: FolderKanban, go: () => navigate(`/projects/${p.id}`) })
       })
       dbInvoices.filter((i) => i.invoice_number.toLowerCase().includes(q)).slice(0, 4).forEach((i) => {
@@ -89,20 +77,9 @@ export function GlobalSearch() {
       dbNotes.filter((n) => n.title.toLowerCase().includes(q) || (n.content || '').toLowerCase().includes(q)).slice(0, 4).forEach((n) => {
         out.push({ id: `note-${n.id}`, label: n.title, sublabel: `Note · ${n.project_name}`, icon: StickyNote, go: () => navigate(`/projects/${n.project_id}`) })
       })
-      dbFiles.filter((f) => f.original_name.toLowerCase().includes(q)).slice(0, 4).forEach((f) => {
-        out.push({ id: `file-${f.id}`, label: f.original_name, sublabel: `File · ${f.project_name}`, icon: Paperclip, go: () => navigate(`/projects/${f.project_id}`) })
+      dbFiles.filter((f) => f.file_name.toLowerCase().includes(q)).slice(0, 4).forEach((f) => {
+        out.push({ id: `file-${f.id}`, label: f.file_name, sublabel: `File · ${f.project_name}`, icon: Paperclip, go: () => navigate(`/projects/${f.project_id}`) })
       })
-    } else {
-      legacyProjects.filter((p) => p.name.toLowerCase().includes(q) || p.client.toLowerCase().includes(q)).slice(0, 4).forEach((p) => {
-        out.push({ id: `proj-${p.id}`, label: p.name, sublabel: 'Project', icon: FolderKanban, go: () => navigate(`/projects/${p.id}`) })
-      })
-      legacyInvoices.filter((i) => i.invoiceNumber.toLowerCase().includes(q) || i.billTo.name.toLowerCase().includes(q)).slice(0, 4).forEach((i) => {
-        out.push({ id: `inv-${i.id}`, label: i.invoiceNumber, sublabel: `Invoice · ${i.billTo.name}`, icon: FileText, go: () => navigate(`/invoices/${i.id}`) })
-      })
-      legacyClients.filter((c) => c.company.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)).slice(0, 4).forEach((c) => {
-        out.push({ id: `cli-${c.id}`, label: c.company, sublabel: 'Client', icon: Users, go: () => navigate('/clients') })
-      })
-    }
 
     vaultNames.secrets.filter((s) => s.name.toLowerCase().includes(q)).slice(0, 4).forEach((s) => {
       out.push({ id: `sec-${s.id}`, label: s.name, sublabel: 'Secret · name only', icon: KeyRound, go: () => navigate(s.project_id ? `/projects/${s.project_id}/vault?tab=env` : '/secrets') })
@@ -115,7 +92,7 @@ export function GlobalSearch() {
     })
 
     return out.slice(0, 10)
-  }, [query, desktop, dbProjects, dbInvoices, dbClients, dbNotes, dbFiles, legacyProjects, legacyInvoices, legacyClients, vaultNames, navigate])
+  }, [query, dbProjects, dbInvoices, dbClients, dbNotes, dbFiles, vaultNames, navigate])
 
   return (
     <div className="relative flex-1 max-w-md">

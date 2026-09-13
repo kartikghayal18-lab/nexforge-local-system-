@@ -6,7 +6,6 @@ import { Modal } from '@/components/common/Modal'
 import { useVault } from '@/vault/VaultContext'
 import { vaultApi } from '@/vault/tauriClient'
 import { useToast } from '@/hooks/useToast'
-import { useProjects } from '@/hooks/useStore'
 
 const AUTO_LOCK_OPTIONS = [
   { label: '5 minutes', value: 5 },
@@ -91,7 +90,6 @@ export function SecuritySettings() {
             physical note, not this app).
           </div>
 
-          <MigrateDataRow />
         </>
       )}
 
@@ -255,49 +253,3 @@ function ImportBackupModal({ open, onClose }: { open: boolean; onClose: () => vo
   )
 }
 
-function MigrateDataRow() {
-  const [projects] = useProjects()
-  const { show } = useToast()
-  const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState(false)
-
-  async function migrate() {
-    setBusy(true)
-    try {
-      const count = await vaultApi.projectsMigrate(
-        projects.map((p) => ({
-          id: p.id,
-          name: p.name,
-          client: p.client || null,
-          description: p.description || null,
-          status: p.status || null,
-          framework: p.framework || null,
-          backend: p.backend || null,
-          database_type: p.database || null,
-          hosting: p.hosting || null,
-          created_at: p.createdAt,
-          updated_at: p.updatedAt,
-        })),
-      )
-      setDone(true)
-      show(`${count} project${count === 1 ? '' : 's'} synced to the local database`)
-    } catch (e) {
-      show(String(e), 'error')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="rounded-lg border border-surface-500 bg-surface-300 px-3.5 py-3">
-      <p className="text-xs text-ink-300 mb-2">
-        Projects, invoices, clients and notes currently live in this browser's local storage (Phase 1). Your
-        real secrets always live only in the encrypted vault above — this just mirrors project records into the
-        local database so the vault can link credentials to them reliably.
-      </p>
-      <Button size="sm" variant="secondary" onClick={migrate} disabled={busy}>
-        {busy ? 'Migrating…' : done ? 'Migrated ✓ — Run Again' : 'Migrate Existing Data'}
-      </Button>
-    </div>
-  )
-}

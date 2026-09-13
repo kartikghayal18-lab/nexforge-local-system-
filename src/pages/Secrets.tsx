@@ -11,7 +11,8 @@ import { ImportEnvModal } from '@/components/vault/ImportEnvModal'
 import { ExportEnvMenu } from '@/components/vault/ExportEnvMenu'
 import { useVault } from '@/vault/VaultContext'
 import { vaultApi } from '@/vault/tauriClient'
-import { useProjects } from '@/hooks/useStore'
+import { coreApi } from '@/data/coreClient'
+import type { ProjectFull } from '@/data/coreTypes'
 import { SecretRecord, VAULT_ENVIRONMENTS, SECRET_CATEGORIES } from '@/vault/types'
 
 export default function Secrets() {
@@ -47,7 +48,8 @@ export default function Secrets() {
 
 function SecretsContent({ reloadKey, onReload }: { reloadKey: number; onReload: () => void }) {
   const navigate = useNavigate()
-  const [projects] = useProjects()
+  const [projects, setProjects] = useState<ProjectFull[]>([])
+  useEffect(() => { coreApi.projectsList().then(setProjects).catch(() => setProjects([])) }, [])
   const [secrets, setSecrets] = useState<SecretRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')

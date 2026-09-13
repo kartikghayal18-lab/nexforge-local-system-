@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Plus, FileDown, KeyRound, Lock, Database as DbIcon, Shield } from 'lucide-react'
 import { Button } from '@/components/common/Button'
-import { VaultGuard } from '@/components/vault/VaultGuard'
 import { EnvVariablesTable } from '@/components/vault/EnvVariablesTable'
 import { PasswordsTable } from '@/components/vault/PasswordsTable'
 import { DatabasesTable } from '@/components/vault/DatabasesTable'
@@ -11,10 +10,10 @@ import { AddPasswordModal } from '@/components/vault/AddPasswordModal'
 import { AddDatabaseModal } from '@/components/vault/AddDatabaseModal'
 import { ImportEnvModal } from '@/components/vault/ImportEnvModal'
 import { ExportEnvMenu } from '@/components/vault/ExportEnvMenu'
-import { useVault } from '@/vault/VaultContext'
 import { vaultApi } from '@/vault/tauriClient'
-import { useProjects } from '@/hooks/useStore'
+import { coreApi } from '@/data/coreClient'
 import { SecretRecord, PasswordRecord, DatabaseRecord } from '@/vault/types'
+import type { ProjectFull } from '@/data/coreTypes'
 
 type Tab = 'env' | 'passwords' | 'databases' | 'other'
 
@@ -31,8 +30,9 @@ export default function ProjectVault() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [params] = useSearchParams()
-  const [projects] = useProjects()
-  const project = projects.find((p) => p.id === id)
+  const [project, setProject] = useState<ProjectFull | null>(null)
+  const [projectLoading, setProjectLoading] = useState(true)
+  const [projectError, setProjectError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>((params.get('tab') as Tab) || 'env')
 
   const [secrets, setSecrets] = useState<SecretRecord[]>([])
@@ -48,11 +48,26 @@ export default function ProjectVault() {
   const [editingPassword, setEditingPassword] = useState<PasswordRecord | null>(null)
   const [editingDatabase, setEditingDatabase] = useState<DatabaseRecord | null>(null)
 
-  const { desktop, unlocked } = useVault()
-  const canAct = desktop && unlocked
+  // The whole app requires sign-in already (ProtectedRoute) — no separate
+  // vault "unlock" step exists server-side, so vault actions are always
+  // available to an authenticated user.
+  const canAct = true
+
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    setProjectLoading(true)
+    setProjectError(null)
+    coreApi
+      .projectsGet(id)
+      .then((p) => { if (!cancelled) setProject(p) })
+      .catch((e) => { if (!cancelled) setProjectError(e instanceof Error ? e.message : 'Failed to load project') })
+      .finally(() => { if (!cancelled) setProjectLoading(false) })
+    return () => { cancelled = true }
+  }, [id])
 
   const load = useCallback(async () => {
-    if (!id || !canAct) { setLoading(false); return }
+    if (!id) { setLoading(false); return }
     setLoading(true)
     try {
       const [s, p, d] = await Promise.all([
@@ -66,9 +81,22 @@ export default function ProjectVault() {
     } finally {
       setLoading(false)
     }
-  }, [id, canAct])
+  }, [id])
 
   useEffect(() => { load() }, [load])
+
+  if (projectLoading) {
+    return <p className="text-sm text-ink-500">Loading…</p>
+  }
+
+  if (projectError) {
+    return (
+      <div className="text-center py-20">
+        <p className="text-sm text-rose-400">{projectError}</p>
+        <button onClick={() => navigate('/projects')} className="mt-3 text-sm text-accent-400 hover:text-accent-300">Back to Projects</button>
+      </div>
+    )
+  }
 
   if (!project) {
     return (
@@ -123,26 +151,24 @@ export default function ProjectVault() {
         ))}
       </div>
 
-      <VaultGuard>
-        {loading ? (
-          <p className="text-sm text-ink-500">Loading…</p>
-        ) : (
-          <>
-            {tab === 'env' && (
-              <EnvVariablesTable secrets={secrets} onEdit={setEditingSecret} onChanged={load} />
-            )}
-            {tab === 'passwords' && (
-              <PasswordsTable passwords={passwords} onEdit={setEditingPassword} onChanged={load} />
-            )}
-            {tab === 'databases' && (
-              <DatabasesTable databases={databases} onEdit={setEditingDatabase} onChanged={load} />
-            )}
-            {tab === 'other' && (
-              <EnvVariablesTable secrets={otherSecrets} onEdit={setEditingSecret} onChanged={load} />
-            )}
-          </>
-        )}
-      </VaultGuard>
+      {loading ? (
+        <p className="text-sm text-ink-500">Loading…</p>
+      ) : (
+        <>
+          {tab === 'env' && (
+            <EnvVariablesTable secrets={secrets} onEdit={setEditingSecret} onChanged={load} />
+          )}
+          {tab === 'passwords' && (
+            <PasswordsTable passwords={passwords} onEdit={setEditingPassword} onChanged={load} />
+          )}
+          {tab === 'databases' && (
+            <DatabasesTable databases={databases} onEdit={setEditingDatabase} onChanged={load} />
+          )}
+          {tab === 'other' && (
+            <EnvVariablesTable secrets={otherSecrets} onEdit={setEditingSecret} onChanged={load} />
+          )}
+        </>
+      )}
 
       <AddSecretModal open={showAddSecret} onClose={() => setShowAddSecret(false)} projectId={id ?? null} onSaved={load} />
       <AddSecretModal open={!!editingSecret} onClose={() => setEditingSecret(null)} projectId={id ?? null} onSaved={load} editing={editingSecret} />

@@ -46,11 +46,22 @@ export async function deleteAllWorkspaceData(client) {
 // here it's logged, not retried, and the DB-level reset is not rolled back
 // for it; an orphaned file is a much smaller problem than a stuck reset.
 //
-// KNOWN LIMITATION: project_files (generic file attachments) live in
-// Cloudflare R2 via a different client (server/src/lib/r2.js), not this
-// storage abstraction — callers that also want those cleaned up must do it
-// separately (see server/src/routes/workspace.js).
+// project_files (generic file attachments) live in Cloudinary via a
+// different upload path (server/src/lib/cloudinary.js), not this image
+// abstraction — callers that also want those cleaned up should call
+// collectProjectFileAssets() too (see server/src/routes/workspace.js).
 export async function collectLocalImageStorageKeys(client) {
   const { rows } = await client.query("SELECT storage_key FROM project_images WHERE storage_key IS NOT NULL AND storage_key <> ''")
   return rows.map((r) => r.storage_key)
+}
+
+// Collects { publicId, resourceType } pairs for every generic project file
+// (Cloudinary) BEFORE the DB rows are deleted, so the caller can
+// best-effort destroy the underlying Cloudinary assets after the
+// transaction commits — same discipline as collectLocalImageStorageKeys above.
+export async function collectProjectFileAssets(client) {
+  const { rows } = await client.query(
+    "SELECT storage_key, resource_type FROM project_files WHERE storage_key IS NOT NULL AND storage_key <> ''",
+  )
+  return rows.map((r) => ({ publicId: r.storage_key, resourceType: r.resource_type || 'raw' }))
 }

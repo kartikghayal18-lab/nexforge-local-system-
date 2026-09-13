@@ -5,6 +5,8 @@ import { Input, Select, TextArea } from '@/components/common/Input'
 import { vaultApi } from '@/vault/tauriClient'
 import { useToast } from '@/hooks/useToast'
 import { VAULT_ENVIRONMENTS, DATABASE_PROVIDERS, DatabaseRecord } from '@/vault/types'
+import { useProjectPicker } from './useProjectPicker'
+import { useNavigate } from 'react-router-dom'
 
 interface Props {
   open: boolean
@@ -16,6 +18,8 @@ interface Props {
 
 export function AddDatabaseModal({ open, onClose, projectId, onSaved, editing }: Props) {
   const { show } = useToast()
+  const navigate = useNavigate()
+  const picker = useProjectPicker(projectId)
   const [name, setName] = useState(editing?.name ?? '')
   const [provider, setProvider] = useState(editing?.provider ?? 'PostgreSQL')
   const [host, setHost] = useState(editing?.host ?? '')
@@ -48,6 +52,10 @@ export function AddDatabaseModal({ open, onClose, projectId, onSaved, editing }:
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim()) return
+    if (!editing && !picker.canSubmit) {
+      show('Choose a project first', 'error')
+      return
+    }
     setBusy(true)
     try {
       if (editing) {
@@ -66,7 +74,7 @@ export function AddDatabaseModal({ open, onClose, projectId, onSaved, editing }:
         show('Database credential updated')
       } else {
         await vaultApi.databasesCreate({
-          project_id: projectId,
+          project_id: picker.resolvedProjectId,
           name: name.trim(),
           provider,
           host: host || null,
@@ -91,6 +99,20 @@ export function AddDatabaseModal({ open, onClose, projectId, onSaved, editing }:
   return (
     <Modal open={open} onClose={onClose} title={editing ? 'Edit Database' : 'Add Database'} size="lg">
       <form onSubmit={submit} className="space-y-3">
+        {!editing && picker.needsPicker && (
+          picker.noProjects ? (
+            <p className="text-xs text-amber-400">
+              You need a project first. <button type="button" onClick={() => navigate('/projects?new=1')} className="underline hover:text-amber-300">Create a project</button>
+            </p>
+          ) : (
+            <Select label="Project" required value={picker.selected} onChange={(e) => picker.setSelected(e.target.value)}>
+              <option value="">Select a project…</option>
+              {picker.projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </Select>
+          )
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Input label="Name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Production PostgreSQL" />
           <Select label="Provider" value={provider} onChange={(e) => setProvider(e.target.value)}>
@@ -131,7 +153,7 @@ export function AddDatabaseModal({ open, onClose, projectId, onSaved, editing }:
           <button type="button" onClick={onClose} className="rounded-lg border border-surface-500 bg-surface-300 px-3.5 py-2 text-sm text-ink-100 hover:bg-surface-400 transition-colors">
             Cancel
           </button>
-          <Button type="submit" disabled={busy}>{busy ? 'Saving…' : editing ? 'Save Changes' : 'Add Database'}</Button>
+          <Button type="submit" disabled={busy || (!editing && !picker.canSubmit)}>{busy ? 'Saving…' : editing ? 'Save Changes' : 'Add Database'}</Button>
         </div>
       </form>
     </Modal>

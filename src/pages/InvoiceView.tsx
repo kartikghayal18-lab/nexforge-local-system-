@@ -3,16 +3,12 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Pencil, Printer, Send, CheckCircle2, Copy, Wallet, Trash2, FileDown } from 'lucide-react'
 import { Button } from '@/components/common/Button'
 import { StatusBadge } from '@/components/common/StatusBadge'
-import { InvoicePreview } from '@/components/invoices/InvoicePreview'
 import { InvoicePreviewCore } from '@/components/invoices/InvoicePreviewCore'
 import { Modal, ConfirmDialog } from '@/components/common/Modal'
 import { Input, Select, TextArea } from '@/components/common/Input'
-import { useInvoices as useLegacyInvoices } from '@/hooks/useStore'
 import { useToast } from '@/hooks/useToast'
-import { uid } from '@/utils/storage'
 import { formatINR, formatDate, todayISO } from '@/utils/format'
-import { nextInvoiceNumber } from './Invoices'
-import { coreApi, isDesktop } from '@/data/coreClient'
+import { coreApi } from '@/data/coreClient'
 import type { Invoice as DbInvoice, Client, Payment, NewPayment } from '@/data/coreTypes'
 
 function friendlyError(e: unknown): string {
@@ -25,51 +21,18 @@ export default function InvoiceView() {
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const { show } = useToast()
-  const desktop = isDesktop()
 
-  // ---------------- Legacy (browser demo) ----------------
-  const [legacyInvoices, setLegacyInvoices] = useLegacyInvoices()
-  const invoice = legacyInvoices.find((i) => i.id === id)
-
-  useEffect(() => {
-    if (!desktop && params.get('print') === '1' && invoice) {
-      const t = setTimeout(() => window.print(), 250)
-      return () => clearTimeout(t)
-    }
-  }, [params, invoice, desktop])
-
-  function setLegacyStatus(status: typeof invoice extends undefined ? never : any) {
-    setLegacyInvoices(legacyInvoices.map((i) => (i.id === invoice!.id ? { ...i, status, updatedAt: new Date().toISOString() } : i)))
-    show(`Invoice marked as ${status}`)
-  }
-  function duplicateLegacy() {
-    const copy = {
-      ...invoice!,
-      id: uid('inv'),
-      invoiceNumber: nextInvoiceNumber(legacyInvoices),
-      status: 'Draft' as const,
-      issueDate: todayISO(),
-      items: invoice!.items.map((i) => ({ ...i, id: uid('item') })),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }
-    setLegacyInvoices([copy, ...legacyInvoices])
-    show('Invoice duplicated')
-    navigate(`/invoices/${copy.id}/edit`)
-  }
-
-  // ---------------- Desktop (real backend) ----------------
   const [dbInvoice, setDbInvoice] = useState<DbInvoice | null>(null)
   const [client, setClient] = useState<Client | null>(null)
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [loading, setLoading] = useState(desktop)
+  const [payments, setPayments] = useState<Payment[]>([])
+  const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [paymentModal, setPaymentModal] = useState(false)
   const [paymentForm, setPaymentForm] = useState({ amount: 0, payment_date: todayISO(), payment_method: '', reference: '', notes: '' })
   const [deletePaymentId, setDeletePaymentId] = useState<string | null>(null)
 
   async function load() {
-    if (!desktop || !id) return
+    if (!id) return
     setLoading(true)
     try {
       const inv = await coreApi.invoicesGet(id)
@@ -88,14 +51,14 @@ export default function InvoiceView() {
   useEffect(() => {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, desktop])
+  }, [id])
 
   useEffect(() => {
-    if (desktop && params.get('print') === '1' && dbInvoice) {
+    if (params.get('print') === '1' && dbInvoice) {
       const t = setTimeout(() => window.print(), 250)
       return () => clearTimeout(t)
     }
-  }, [params, dbInvoice, desktop])
+  }, [params, dbInvoice])
 
   async function setDbStatus(status: string) {
     if (!dbInvoice) return
@@ -151,40 +114,6 @@ export default function InvoiceView() {
   }
 
   // ============================= RENDER =============================
-
-  if (!desktop) {
-    if (!invoice) {
-      return (
-        <div className="text-center py-20">
-          <p className="text-sm text-ink-400">Invoice not found.</p>
-          <button onClick={() => navigate('/invoices')} className="mt-3 text-sm text-accent-400 hover:text-accent-300">
-            Back to Invoices
-          </button>
-        </div>
-      )
-    }
-    return (
-      <div className="max-w-3xl mx-auto">
-        <div className="flex items-center justify-between mb-5 no-print flex-wrap gap-2">
-          <button onClick={() => navigate('/invoices')} className="inline-flex items-center gap-1.5 text-sm text-ink-400 hover:text-ink-100 transition-colors">
-            <ArrowLeft size={14} /> Back to Invoices
-          </button>
-          <div className="flex items-center gap-2 flex-wrap justify-end">
-            <StatusBadge status={invoice.status} />
-            <Button variant="secondary" size="sm" icon={<Send size={13} />} onClick={() => setLegacyStatus('Sent')}>Mark as Sent</Button>
-            <Button variant="secondary" size="sm" icon={<CheckCircle2 size={13} />} onClick={() => setLegacyStatus('Paid')}>Mark as Paid</Button>
-            <Button variant="secondary" size="sm" icon={<Copy size={13} />} onClick={duplicateLegacy}>Duplicate</Button>
-            <Button variant="secondary" size="sm" icon={<Pencil size={13} />} onClick={() => navigate(`/invoices/${invoice.id}/edit`)}>Edit</Button>
-            <Button size="sm" icon={<Printer size={13} />} onClick={() => window.print()}>Print / PDF</Button>
-          </div>
-        </div>
-        <div className="mb-4 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-400 no-print">
-          Demo data — open this app in Desktop Mode for real persistence and payments.
-        </div>
-        <InvoicePreview invoice={invoice} />
-      </div>
-    )
-  }
 
   if (loading) {
     return <div className="max-w-3xl mx-auto h-64 rounded-xl border border-surface-400 bg-surface-200 animate-pulse" />

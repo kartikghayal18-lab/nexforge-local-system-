@@ -30,7 +30,7 @@ implement every extension, function, or edge case identically to real
 Postgres (see the workarounds in `smoke-test.js` for `pgcrypto` and a
 volatile-default-in-a-loop quirk). Passing the smoke test means the SQL and
 route logic aren't obviously broken; it does **not** mean the schema will
-apply cleanly to Neon, that R2 presigned URLs work, that Render will start
+apply cleanly to Neon, that Cloudinary uploads work, that Render will start
 the service correctly, or that Vercel will build/serve the frontend
 correctly against a live API. None of those were reachable from the
 environment this phase was built in — see `docs/DEPLOYMENT.md` for what the
@@ -49,7 +49,7 @@ owner needs to verify by hand after deploying.
 - [ ] Add a project secret; confirm the list shows a masked value; use
       "Reveal" and confirm the real value appears.
 - [ ] Upload a project file; confirm it appears in the list and can be
-      opened/downloaded; delete it and confirm it's gone from R2 too (not
-      just the DB row).
+      opened/downloaded; delete it and confirm the asset is also gone from
+      Cloudinary's Media Library (not just the DB row).
 - [ ] Log out (clear the token) and confirm every page redirects to
       `/login`.

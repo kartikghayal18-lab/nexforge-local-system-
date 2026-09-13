@@ -6,6 +6,8 @@ import { vaultApi } from '@/vault/tauriClient'
 import { useToast } from '@/hooks/useToast'
 import { VAULT_ENVIRONMENTS } from '@/vault/types'
 import { guessCategoryForKey } from '@/vault/envPresets'
+import { useProjectPicker } from './useProjectPicker'
+import { useNavigate } from 'react-router-dom'
 
 interface ParsedVar {
   key: string
@@ -47,6 +49,8 @@ export function parseEnvText(text: string): ParsedVar[] {
 
 export function ImportEnvModal({ open, onClose, projectId, onImported }: Props) {
   const { show } = useToast()
+  const navigate = useNavigate()
+  const picker = useProjectPicker(projectId)
   const [text, setText] = useState('')
   const [environment, setEnvironment] = useState('Production')
   const [busy, setBusy] = useState(false)
@@ -55,11 +59,15 @@ export function ImportEnvModal({ open, onClose, projectId, onImported }: Props) 
 
   async function importVars() {
     if (parsed.length === 0) return
+    if (!picker.canSubmit) {
+      show('Choose a project first', 'error')
+      return
+    }
     setBusy(true)
     try {
       await vaultApi.secretsBulkCreate(
         parsed.map((p) => ({
-          project_id: projectId,
+          project_id: picker.resolvedProjectId,
           name: p.key,
           category: guessCategoryForKey(p.key),
           environment,
@@ -81,6 +89,20 @@ export function ImportEnvModal({ open, onClose, projectId, onImported }: Props) 
   return (
     <Modal open={open} onClose={onClose} title="Import .env Variables" size="lg">
       <div className="space-y-3">
+        {picker.needsPicker && (
+          picker.noProjects ? (
+            <p className="text-xs text-amber-400">
+              You need a project first. <button type="button" onClick={() => navigate('/projects?new=1')} className="underline hover:text-amber-300">Create a project</button>
+            </p>
+          ) : (
+            <Select label="Project" required value={picker.selected} onChange={(e) => picker.setSelected(e.target.value)}>
+              <option value="">Select a project…</option>
+              {picker.projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </Select>
+          )
+        )}
         <Select label="Import into environment" value={environment} onChange={(e) => setEnvironment(e.target.value)}>
           {VAULT_ENVIRONMENTS.map((env) => (
             <option key={env} value={env}>{env}</option>
@@ -120,7 +142,7 @@ export function ImportEnvModal({ open, onClose, projectId, onImported }: Props) 
           <button type="button" onClick={onClose} className="rounded-lg border border-surface-500 bg-surface-300 px-3.5 py-2 text-sm text-ink-100 hover:bg-surface-400 transition-colors">
             Cancel
           </button>
-          <Button onClick={importVars} disabled={busy || parsed.length === 0}>
+          <Button onClick={importVars} disabled={busy || parsed.length === 0 || !picker.canSubmit}>
             {busy ? 'Importing…' : `Import ${parsed.length || ''} Variable${parsed.length === 1 ? '' : 's'}`}
           </Button>
         </div>

@@ -8,7 +8,7 @@ import type {
   Client, NewClient, UpdateClient,
   ProjectFull, NewProject, UpdateProject,
   ProjectLinkRecord, NewProjectLink,
-  ProjectNote, NewProjectNote, UpdateProjectNote,
+  ProjectNote, NewProjectNote, UpdateProjectNote, ProjectNoteWithProject,
   ProjectFile, ProjectImage,
   OwnerProfile, ProfileUpdate,
   Invoice, NewInvoice, UpdateInvoice,
@@ -88,6 +88,7 @@ export const coreApi = {
     post<{ id: string }>(`/api/projects/${input.project_id}/notes`, input).then((r) => r.id),
   projectNotesUpdate: (input: UpdateProjectNote) => put<void>(`/api/projects/notes/${input.id}`, input),
   projectNotesDelete: (id: string) => del<void>(`/api/projects/notes/${id}`),
+  notesListAll: () => get<ProjectNoteWithProject[]>('/api/projects/notes/all'),
 
   // Project images (cover + gallery) — uploaded via multipart POST straight
   // to the Express backend, which writes to its own local disk and returns
@@ -108,15 +109,17 @@ export const coreApi = {
   projectImagesAddStatic: (projectId: string, url: string, isCover?: boolean) =>
     post<ProjectImage>(`/api/projects/${projectId}/images/static`, { url, isCover }),
 
-  // Project files (metadata + R2 presigned upload/download flow)
+  // Project files (documents/attachments) — uploaded via multipart POST
+  // straight to the Express backend, which uploads to Cloudinary and
+  // returns metadata + the durable secure_url (no presign/confirm dance,
+  // no separate download-URL fetch — the stored url is permanent).
   projectFilesList: (projectId: string) => get<ProjectFile[]>(`/api/files/project/${projectId}`),
-  projectFilesPresign: (projectId: string, args: { fileName: string; contentType?: string; size?: number }) =>
-    post<{ uploadUrl: string; storageKey: string }>(`/api/files/project/${projectId}/presign`, args),
-  projectFilesConfirm: (
-    projectId: string,
-    args: { fileName: string; contentType?: string; size: number; storageKey: string; url?: string; category?: string },
-  ) => post<ProjectFile>(`/api/files/project/${projectId}/confirm`, args),
-  projectFilesDownloadUrl: (id: string) => get<{ url: string }>(`/api/files/${id}/download`),
+  projectFilesUpload: (projectId: string, file: File, category?: string) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (category) formData.append('category', category)
+    return request<ProjectFile>(`/api/files/project/${projectId}`, { method: 'POST', body: formData })
+  },
   projectFilesDelete: (id: string) => del<void>(`/api/files/${id}`),
 
   // Owner profile
@@ -128,6 +131,14 @@ export const coreApi = {
     return request<{ url: string }>('/api/profile/avatar', { method: 'POST', body: formData })
   },
   profileAvatarSetStatic: (url: string) => post<{ url: string }>('/api/profile/avatar/static', { url }),
+
+  // Business logo — real Cloudinary upload, replacing the old
+  // business_logo_base64 pattern (a raw base64 string in business_settings).
+  settingsUploadLogo: (file: File) => {
+    const formData = new FormData()
+    formData.append('logo', file)
+    return request<{ url: string }>('/api/settings/logo', { method: 'POST', body: formData })
+  },
 
   // Workspace reset — deletes all business data, keeps the owner account/profile.
   workspaceReset: () => post<{ ok: boolean; filesDeleted: number; fileErrors: number }>('/api/workspace/reset'),

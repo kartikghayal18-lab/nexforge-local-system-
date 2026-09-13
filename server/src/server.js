@@ -1,6 +1,8 @@
 import 'dotenv/config'
 import { createApp } from './app.js'
 import { runMigrations } from '../db/migrate.js'
+import { validateEncryptionKeyOrThrow } from './lib/crypto.js'
+import { validateCloudinaryConfigOrThrow } from './lib/cloudinary.js'
 
 const port = process.env.PORT || 4000
 
@@ -12,6 +14,30 @@ if (!process.env.JWT_SECRET) {
 }
 
 async function start() {
+  // ENCRYPTION_KEY protects every secret/password/database-credential row in
+  // the vault. Validate it once, here, before accepting traffic — a missing
+  // or malformed key must never fall back to silently generating a random
+  // one (that would permanently orphan every previously-encrypted row); it
+  // must fail the boot loudly and specifically instead.
+  try {
+    validateEncryptionKeyOrThrow()
+    console.log('[server] ENCRYPTION_KEY is valid')
+  } catch (err) {
+    console.error('[server] invalid ENCRYPTION_KEY:', err.message)
+    process.exit(1)
+  }
+
+  // CLOUDINARY_* protects every durable file/image upload (project
+  // images/files, business logo). Same fail-fast contract as
+  // ENCRYPTION_KEY above — validate once, here, before accepting traffic.
+  try {
+    validateCloudinaryConfigOrThrow()
+    console.log('[server] Cloudinary config is valid')
+  } catch (err) {
+    console.error('[server] invalid Cloudinary configuration:', err.message)
+    process.exit(1)
+  }
+
   // Apply any pending schema/migrations against DATABASE_URL before
   // accepting traffic. This is what makes a Render deploy self-healing for
   // schema drift — a migration file added to server/db/migrations/ is

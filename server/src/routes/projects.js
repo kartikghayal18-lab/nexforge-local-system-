@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import multer from 'multer'
 import { pool } from '../db/pool.js'
-import { saveImage, deleteImage, validateImageUpload, MAX_IMAGE_SIZE_BYTES, StorageNotConfiguredError } from '../lib/storage/index.js'
+import { saveImage, deleteImage, validateImageUpload, MAX_IMAGE_SIZE_BYTES } from '../lib/storage/index.js'
 
 const router = Router()
 
@@ -73,6 +73,14 @@ router.delete('/links/:linkId', async (req, res) => {
 })
 
 // --- Project notes ---
+router.get('/notes/all', async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT n.*, p.name AS project_name FROM project_notes n
+     JOIN projects p ON p.id = n.project_id
+     ORDER BY n.updated_at DESC`
+  )
+  res.json(rows)
+})
 router.get('/:id/notes', async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM project_notes WHERE project_id = $1 ORDER BY created_at DESC', [req.params.id])
   res.json(rows)
@@ -123,15 +131,7 @@ router.post('/:id/images', upload.single('image'), async (req, res) => {
   const { rows: existing } = await pool.query('SELECT id FROM project_images WHERE project_id = $1 LIMIT 1', [projectId])
   const wantsCover = req.body?.isCover === 'true' || existing.length === 0
 
-  let key, url
-  try {
-    ;({ key, url } = await saveImage({ buffer, projectId, originalName: originalname, mimeType: mimetype }))
-  } catch (err) {
-    if (err instanceof StorageNotConfiguredError) {
-      return res.status(503).json({ error: err.message })
-    }
-    throw err
-  }
+  const { key, url, resourceType, format } = await saveImage({ buffer, projectId, originalName: originalname, mimeType: mimetype })
 
   const client = await pool.connect()
   try {
@@ -140,9 +140,9 @@ router.post('/:id/images', upload.single('image'), async (req, res) => {
       await client.query('UPDATE project_images SET is_cover = false WHERE project_id = $1 AND is_cover = true', [projectId])
     }
     const { rows } = await client.query(
-      `INSERT INTO project_images (project_id, url, storage_key, is_cover, file_name, file_size, mime_type)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [projectId, url, key, wantsCover, originalname, size, mimetype],
+      `INSERT INTO project_images (project_id, url, storage_key, is_cover, file_name, file_size, mime_type, resource_type, format)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [projectId, url, key, wantsCover, originalname, size, mimetype, resourceType ?? null, format ?? null],
     )
     await client.query('COMMIT')
     res.json(rows[0])

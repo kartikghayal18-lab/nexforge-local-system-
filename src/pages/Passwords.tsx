@@ -8,7 +8,8 @@ import { PasswordsTable } from '@/components/vault/PasswordsTable'
 import { AddPasswordModal } from '@/components/vault/AddPasswordModal'
 import { useVault } from '@/vault/VaultContext'
 import { vaultApi } from '@/vault/tauriClient'
-import { useProjects } from '@/hooks/useStore'
+import { coreApi } from '@/data/coreClient'
+import type { ProjectFull } from '@/data/coreTypes'
 import { PasswordRecord, VAULT_ENVIRONMENTS } from '@/vault/types'
 
 export default function Passwords() {
@@ -33,7 +34,8 @@ export default function Passwords() {
 }
 
 function PasswordsContent({ reloadKey, onReload }: { reloadKey: number; onReload: () => void }) {
-  const [projects] = useProjects()
+  const [projects, setProjects] = useState<ProjectFull[]>([])
+  useEffect(() => { coreApi.projectsList().then(setProjects).catch(() => setProjects([])) }, [])
   const [passwords, setPasswords] = useState<PasswordRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
