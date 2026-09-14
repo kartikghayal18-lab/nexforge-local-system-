@@ -45,6 +45,26 @@ export const folders = {
   businessLogo: () => 'nexforge/business/logo',
 }
 
+// Safe, server-console-only diagnostic logging for every upload attempt.
+// Never logs api_key/api_secret values, JWTs, or file bytes — only the
+// cloud name (identifies WHICH Cloudinary account was used, without
+// exposing the secret), the folder, and the resource type. On failure,
+// logs the Cloudinary error's http_code + name, which is enough to tell
+// "bad credentials" (401) apart from "account/plan restriction" (403)
+// apart from "bad file" (400) apart from "rate limited" (420) — without
+// ever repeating err.message verbatim, since some Cloudinary error
+// messages can echo back request parameters.
+function logUploadAttempt({ folder, resourceType }) {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || '(unset)'
+  console.log(`[cloudinary] upload attempt — cloud_name=${cloudName} folder=${folder} resource_type=${resourceType}`)
+}
+
+function logUploadFailure(err) {
+  const httpCode = err?.http_code ?? '(none)'
+  const name = err?.name ?? '(none)'
+  console.error(`[cloudinary] upload failed — http_code=${httpCode} name=${name}`)
+}
+
 // uploadBuffer(buffer, { folder, resourceType, publicId, originalFilename })
 //   -> { public_id, secure_url, resource_type, format, bytes, original_filename }
 //
@@ -52,6 +72,7 @@ export const folders = {
 // standardizes on multer memoryStorage buffers everywhere.
 export function uploadBuffer(buffer, { folder, resourceType = 'auto', publicId, originalFilename } = {}) {
   configureOnce()
+  logUploadAttempt({ folder, resourceType })
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
@@ -63,7 +84,10 @@ export function uploadBuffer(buffer, { folder, resourceType = 'auto', publicId, 
         overwrite: false,
       },
       (err, result) => {
-        if (err) return reject(err)
+        if (err) {
+          logUploadFailure(err)
+          return reject(err)
+        }
         resolve({
           public_id: result.public_id,
           secure_url: result.secure_url,

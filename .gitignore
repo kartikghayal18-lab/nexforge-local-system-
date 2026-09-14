@@ -12,3 +12,6 @@ src-tauri/gen
 # Local encrypted vault database — never commit, even though it's ciphertext
 *.sqlite3
 *.nexforgevault
+.env
+.env.*
+!.env.example

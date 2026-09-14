@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Save, Send, CheckCircle2, Printer } from 'lucide-react'
 import { Button } from '@/components/common/Button'
 import { InvoiceFormCore, CoreInvoiceFormState } from '@/components/invoices/InvoiceFormCore'
-import { InvoicePreviewCore } from '@/components/invoices/InvoicePreviewCore'
+import { InvoicePreviewCore, CorePreviewSettings } from '@/components/invoices/InvoicePreviewCore'
 import { useToast } from '@/hooks/useToast'
 import { coreApi } from '@/data/coreClient'
 import type { Client, ProjectFull, NewInvoice, UpdateInvoice } from '@/data/coreTypes'
@@ -39,6 +39,7 @@ export default function InvoiceEditor() {
   const [projects, setProjects] = useState<ProjectFull[]>([])
   const [form, setForm] = useState<CoreInvoiceFormState>(blankCoreForm())
   const [invoiceNumber, setInvoiceNumber] = useState<string>('')
+  const [bizSettings, setBizSettings] = useState<CorePreviewSettings>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -49,6 +50,14 @@ export default function InvoiceEditor() {
         const [c, p] = await Promise.all([coreApi.clientsList(), coreApi.projectsList()])
         setClients(c)
         setProjects(p)
+        // Always refetch business settings fresh on mount, so an editor
+        // opened after a Settings save shows the current saved values —
+        // never seed.ts placeholders and never a stale cross-navigation cache.
+        try {
+          setBizSettings(await coreApi.settingsGetAll())
+        } catch {
+          // Non-fatal — preview falls back to blanks (fields are omitted).
+        }
         if (id) {
           const inv = await coreApi.invoicesGet(id)
           setInvoiceNumber(inv.invoice_number)
@@ -166,6 +175,7 @@ export default function InvoiceEditor() {
               status: form.status,
             }}
             client={selectedClient}
+            settings={bizSettings}
           />
         </div>
       </div>

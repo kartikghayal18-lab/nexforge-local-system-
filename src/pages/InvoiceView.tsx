@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Pencil, Printer, Send, CheckCircle2, Copy, Wallet, Trash2, FileDown } from 'lucide-react'
 import { Button } from '@/components/common/Button'
 import { StatusBadge } from '@/components/common/StatusBadge'
-import { InvoicePreviewCore } from '@/components/invoices/InvoicePreviewCore'
+import { InvoicePreviewCore, CorePreviewSettings } from '@/components/invoices/InvoicePreviewCore'
 import { Modal, ConfirmDialog } from '@/components/common/Modal'
 import { Input, Select, TextArea } from '@/components/common/Input'
 import { useToast } from '@/hooks/useToast'
@@ -30,6 +30,7 @@ export default function InvoiceView() {
   const [paymentModal, setPaymentModal] = useState(false)
   const [paymentForm, setPaymentForm] = useState({ amount: 0, payment_date: todayISO(), payment_method: '', reference: '', notes: '' })
   const [deletePaymentId, setDeletePaymentId] = useState<string | null>(null)
+  const [bizSettings, setBizSettings] = useState<CorePreviewSettings>({})
 
   async function load() {
     if (!id) return
@@ -40,6 +41,11 @@ export default function InvoiceView() {
       const [clients, pays] = await Promise.all([coreApi.clientsList(), coreApi.paymentsList(id)])
       setClient(clients.find((c) => c.id === inv.client_id) || null)
       setPayments(pays)
+      try {
+        setBizSettings(await coreApi.settingsGetAll())
+      } catch {
+        // Non-fatal — preview falls back to blanks (fields are omitted).
+      }
     } catch (e) {
       setNotFound(true)
       console.error(e)
@@ -190,6 +196,7 @@ export default function InvoiceView() {
           status: dbInvoice.status,
         }}
         client={client}
+        settings={bizSettings}
       />
 
       <section className="mt-5 rounded-xl border border-surface-400 bg-surface-200 p-4 no-print">

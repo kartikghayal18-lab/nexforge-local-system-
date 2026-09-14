@@ -2,17 +2,58 @@
 // backend). Streams directly to the given writable (an HTTP response).
 import PDFDocument from 'pdfkit'
 
-export function renderInvoicePdf(res, { invoice, items, payments, client, project, settings }) {
+// Fetches the business logo image bytes so they can be embedded in the PDF
+// header. Best-effort only: a slow/dead/unreachable Cloudinary URL, a
+// non-2xx response, or a format pdfkit can't embed must never fail PDF
+// generation — the invoice should still render, just without the logo.
+// 5s timeout so a hung upstream can't hang PDF generation indefinitely.
+async function fetchLogoBuffer(logoUrl) {
+  if (!logoUrl) return null
+  try {
+    const res = await fetch(logoUrl, { signal: AbortSignal.timeout(5000) })
+    if (!res.ok) {
+      console.error('[pdf] logo fetch failed — non-OK response:', res.status)
+      return null
+    }
+    const arrayBuffer = await res.arrayBuffer()
+    return Buffer.from(arrayBuffer)
+  } catch (err) {
+    console.error('[pdf] logo fetch failed:', err.message)
+    return null
+  }
+}
+
+export async function renderInvoicePdf(res, { invoice, items, payments, client, project, settings }) {
   const doc = new PDFDocument({ size: 'A4', margin: 50 })
   doc.pipe(res)
 
   const businessName = settings.business_name || 'Your Business'
   const businessAddress = settings.business_address || ''
   const businessGstin = settings.business_gstin || ''
+  const businessPhone = settings.business_phone || ''
+  const businessEmail = settings.business_email || ''
+  const businessWebsite = settings.business_website || ''
+  const contactLine = [businessEmail, businessPhone, businessWebsite].filter(Boolean).join('  ·  ')
+
+  // Logo — fetched before any drawing so a failure never leaves the doc
+  // half-drawn; drawn at fixed top-right coordinates so it doesn't disturb
+  // the existing left-aligned header flow below.
+  const logoBuffer = await fetchLogoBuffer(settings.logo_url)
+  if (logoBuffer) {
+    try {
+      doc.image(logoBuffer, 455, 45, { width: 90, height: 90, fit: [90, 90] })
+    } catch (err) {
+      // pdfkit throws synchronously on an unsupported/corrupt image format
+      // (it only supports JPEG and PNG) — log and keep rendering the rest
+      // of the PDF without the logo.
+      console.error('[pdf] logo embed failed (unsupported image format):', err.message)
+    }
+  }
 
   doc.fontSize(20).text(businessName, { continued: false })
   if (businessAddress) doc.fontSize(9).fillColor('#555').text(businessAddress)
   if (businessGstin) doc.fontSize(9).fillColor('#555').text(`GSTIN: ${businessGstin}`)
+  if (contactLine) doc.fontSize(9).fillColor('#555').text(contactLine)
   doc.moveDown()
 
   doc.fillColor('#000').fontSize(16).text(`Invoice ${invoice.invoice_number}`, { align: 'right' })
@@ -84,6 +125,22 @@ export function renderInvoicePdf(res, { invoice, items, payments, client, projec
   }
   if (invoice.notes) {
     doc.fontSize(9).fillColor('#555').text(`Notes: ${invoice.notes}`, 50, y)
+    y += 20
+  }
+
+  // Payment details — omit entirely when nothing is configured, never a
+  // hardcoded placeholder (matches the on-screen preview's behavior).
+  const paymentLines = [
+    settings.bank_name && `Bank: ${settings.bank_name}`,
+    settings.account_name && `Account Name: ${settings.account_name}`,
+    settings.account_number && `Account No.: ${settings.account_number}`,
+    settings.ifsc_code && `IFSC: ${settings.ifsc_code}`,
+    settings.upi_id && `UPI: ${settings.upi_id}`,
+  ].filter(Boolean)
+  if (paymentLines.length) {
+    doc.moveDown(0.5)
+    doc.fontSize(9).fillColor('#000').text('Payment Details:', 50, doc.y)
+    doc.fontSize(9).fillColor('#555').text(paymentLines.join('   '), 50, doc.y + 2)
   }
 
   doc.end()

@@ -1,8 +1,22 @@
 import React from 'react'
 import { Boxes } from 'lucide-react'
 import { formatINR, formatDate } from '@/utils/format'
-import { NEXFORGE_PROFILE } from '@/data/seed'
 import type { InvoiceItemInput, Client } from '@/data/coreTypes'
+
+// Business identity shown on the invoice — always the real, saved
+// business_settings (server/src/routes/settings.js), never a hardcoded
+// placeholder. Every field is optional: an empty/unset setting means the
+// corresponding line is simply omitted from the invoice, not replaced by
+// a fallback string.
+export interface CorePreviewSettings {
+  business_name?: string | null
+  business_address?: string | null
+  business_gstin?: string | null
+  business_email?: string | null
+  business_phone?: string | null
+  business_website?: string | null
+  logo_url?: string | null
+}
 
 export interface CorePreviewData {
   invoiceNumber: string
@@ -25,7 +39,8 @@ function computeTotals(items: InvoiceItemInput[], discount: number, taxRatePerce
   return { subtotal, taxable, tax, total }
 }
 
-export function InvoicePreviewCore({ data, client }: { data: CorePreviewData; client: Client | null }) {
+export function InvoicePreviewCore({ data, client, settings }: { data: CorePreviewData; client: Client | null; settings?: CorePreviewSettings | null }) {
+  const biz = settings || {}
   const t = computeTotals(data.items, data.discount, data.taxRatePercent)
 
   return (
@@ -42,9 +57,9 @@ export function InvoicePreviewCore({ data, client }: { data: CorePreviewData; cl
                 <div className="text-[10px] font-semibold tracking-[0.2em] text-[#5b6bf5] leading-none mt-0.5">STUDIOS</div>
               </div>
             </div>
-            <div className="text-[10px] font-medium tracking-[0.15em] text-[#8b93a7] mt-2">
-              {NEXFORGE_PROFILE.tagline}
-            </div>
+            {biz.logo_url && (
+              <img src={biz.logo_url} alt="" className="h-8 mt-2 object-contain" />
+            )}
           </div>
           <div className="text-right">
             <div className="text-2xl font-extrabold tracking-tight text-[#1c2130]">INVOICE</div>
@@ -74,12 +89,13 @@ export function InvoicePreviewCore({ data, client }: { data: CorePreviewData; cl
         <div className="grid grid-cols-2 gap-6 mt-4">
           <div>
             <div className="text-[10px] font-bold tracking-widest text-[#8b93a7] mb-1.5">FROM</div>
-            <div className="text-sm font-semibold text-[#1c2130]">{NEXFORGE_PROFILE.name}</div>
+            <div className="text-sm font-semibold text-[#1c2130]">{biz.business_name || 'Your Business'}</div>
             <div className="text-xs text-[#6b7385] mt-1 leading-relaxed">
-              <div>{NEXFORGE_PROFILE.address}</div>
-              <div>{[NEXFORGE_PROFILE.city, NEXFORGE_PROFILE.state, NEXFORGE_PROFILE.pin].filter(Boolean).join(', ')}</div>
-              {NEXFORGE_PROFILE.gstin && <div className="mt-1">GSTIN: {NEXFORGE_PROFILE.gstin}</div>}
-              <div className="mt-1">{NEXFORGE_PROFILE.email} · {NEXFORGE_PROFILE.phone}</div>
+              {biz.business_address && <div>{biz.business_address}</div>}
+              {biz.business_gstin && <div className="mt-1">GSTIN: {biz.business_gstin}</div>}
+              {(biz.business_email || biz.business_phone) && (
+                <div className="mt-1">{[biz.business_email, biz.business_phone].filter(Boolean).join(' · ')}</div>
+              )}
             </div>
           </div>
         </div>
@@ -130,12 +146,12 @@ export function InvoicePreviewCore({ data, client }: { data: CorePreviewData; cl
 
         <div className="flex items-end justify-between mt-10 pt-6 border-t border-[#eef0fe]">
           <div className="text-xs text-[#8b93a7]">
-            {NEXFORGE_PROFILE.website} · {NEXFORGE_PROFILE.email} · {NEXFORGE_PROFILE.phone}
+            {[biz.business_website, biz.business_email, biz.business_phone].filter(Boolean).join(' · ')}
           </div>
           <div className="text-right">
             <div className="h-10 w-32 border-b border-[#c4c9d4] mb-1" />
             <div className="text-[11px] font-semibold text-[#1c2130]">Authorized Signatory</div>
-            <div className="text-[10px] text-[#8b93a7]">Nexforge Studios</div>
+            <div className="text-[10px] text-[#8b93a7]">{biz.business_name || ''}</div>
           </div>
         </div>
       </div>

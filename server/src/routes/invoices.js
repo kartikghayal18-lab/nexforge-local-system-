@@ -155,7 +155,7 @@ router.get('/:id/pdf', async (req, res) => {
 
   res.setHeader('Content-Type', 'application/pdf')
   res.setHeader('Content-Disposition', `inline; filename="${invoice.invoice_number}.pdf"`)
-  renderInvoicePdf(res, {
+  await renderInvoicePdf(res, {
     invoice,
     items: invoice.items,
     payments: paymentRows,

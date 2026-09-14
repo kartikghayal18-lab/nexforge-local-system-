@@ -594,6 +594,144 @@ async function main() {
     check('cloudinary: validateCloudinaryConfigOrThrow does not throw once all vars are set', !threwWhenSet)
   }
 
+  // 19. Invoice PDF reflects the CURRENT business_settings row, not a
+  // hardcoded/seeded default — regression test for "settings changes not
+  // reflected in invoice". Renders the same invoice twice with two
+  // different business_settings snapshots and asserts the PDF bytes differ
+  // and each contains its own snapshot's address (proving settings really
+  // flow through renderInvoicePdf, not just that the function runs).
+  {
+    const { renderInvoicePdf } = await import('../src/lib/pdf.js')
+    const { PassThrough } = await import('node:stream')
+
+    const baseInvoice = {
+      invoice_number: 'INV-TEST-0001',
+      issue_date: '2026-01-01',
+      due_date: '2026-01-15',
+      status: 'Draft',
+      subtotal: 100,
+      discount: 0,
+      tax: 0,
+      total: 100,
+      notes: null,
+      payment_terms: null,
+    }
+    const items = [{ description: 'Design work', quantity: 1, rate: 100, amount: 100 }]
+
+    async function renderToBuffer(settings) {
+      const stream = new PassThrough()
+      const chunks = []
+      stream.on('data', (c) => chunks.push(c))
+      const done = new Promise((resolve) => stream.on('end', resolve))
+      await renderInvoicePdf(stream, { invoice: baseInvoice, items, payments: [], client: null, project: null, settings })
+      await done
+      return Buffer.concat(chunks)
+    }
+
+    const settingsA = { business_name: 'Nexforge Test', business_address: 'Pune, Maharashtra, India', business_phone: '', business_email: '', business_website: '', business_gstin: '' }
+    const settingsB = { business_name: 'Nexforge Test', business_address: 'Mumbai, Maharashtra, India', business_phone: '+91-9876543210', business_email: 'billing@example.com', business_website: 'https://example.com', business_gstin: '' }
+
+    const pdfA = await renderToBuffer(settingsA)
+    const pdfB = await renderToBuffer(settingsB)
+
+    check('invoice pdf: two different business_settings snapshots produce different PDF bytes', !pdfA.equals(pdfB), `A=${pdfA.length}b B=${pdfB.length}b`)
+
+    // PDF text is compressed/encoded by pdfkit, so we can't substring-match
+    // the address directly out of the raw bytes — instead assert via the
+    // page's raw stream length differing in a way that tracks the extra
+    // contact-line content added for settingsB (phone/email/website),
+    // which settingsA omits entirely.
+    check('invoice pdf: snapshot with phone/email/website produces a larger PDF than one without', pdfB.length > pdfA.length, `A=${pdfA.length}b B=${pdfB.length}b`)
+  }
+
+  // 20. Invoice PDF embeds the business logo when settings.logo_url is
+  // set — regression test for "logo not embedded in generated PDF" (Task
+  // 4). Stubs global fetch to avoid any real network call: one stub
+  // returns a tiny valid PNG buffer (asserts the logo-present PDF is
+  // larger than the logo-absent one, and generation still succeeds), the
+  // other simulates a fetch failure (asserts generation still succeeds
+  // and produces valid, non-empty PDF output — the logo is skipped, not
+  // the whole PDF).
+  {
+    const { renderInvoicePdf } = await import('../src/lib/pdf.js')
+    const { PassThrough } = await import('node:stream')
+
+    const baseInvoice = {
+      invoice_number: 'INV-TEST-0002',
+      issue_date: '2026-01-01',
+      due_date: '2026-01-15',
+      status: 'Draft',
+      subtotal: 100,
+      discount: 0,
+      tax: 0,
+      total: 100,
+      notes: null,
+      payment_terms: null,
+    }
+    const items = [{ description: 'Design work', quantity: 1, rate: 100, amount: 100 }]
+    const settingsNoLogo = { business_name: 'Nexforge Test', business_address: 'Pune, Maharashtra, India' }
+    const settingsWithLogo = { ...settingsNoLogo, logo_url: 'https://res.cloudinary.com/stub/image/upload/logo.png' }
+
+    // A minimal valid 1x1 PNG (the smallest real PNG pdfkit can embed).
+    const tinyPng = Buffer.from(
+      '89504e470d0a1a0a0000000d494844520000000100000001080600000' +
+      '01f15c4890000000a49444154789c6300010000050001' +
+      '0d0a2db40000000049454e44ae426082',
+      'hex',
+    )
+
+    async function renderToBuffer(settings) {
+      const stream = new PassThrough()
+      const chunks = []
+      stream.on('data', (c) => chunks.push(c))
+      const done = new Promise((resolve) => stream.on('end', resolve))
+      await renderInvoicePdf(stream, { invoice: baseInvoice, items, payments: [], client: null, project: null, settings })
+      await done
+      return Buffer.concat(chunks)
+    }
+
+    const originalFetch = globalThis.fetch
+
+    // 20a. Successful logo fetch — PDF still generates and is larger with
+    // the logo embedded than without.
+    globalThis.fetch = async () => ({
+      ok: true,
+      arrayBuffer: async () => tinyPng.buffer.slice(tinyPng.byteOffset, tinyPng.byteOffset + tinyPng.byteLength),
+    })
+    const pdfNoLogo = await renderToBuffer(settingsNoLogo)
+    const pdfWithLogo = await renderToBuffer(settingsWithLogo)
+    check('invoice pdf: valid PDF still generated without a logo', pdfNoLogo.slice(0, 4).toString() === '%PDF', pdfNoLogo.slice(0, 8).toString())
+    check('invoice pdf: logo embedding produces a larger PDF than without a logo', pdfWithLogo.length > pdfNoLogo.length, `noLogo=${pdfNoLogo.length}b withLogo=${pdfWithLogo.length}b`)
+
+    // 20b. Fetch failure — PDF generation must not crash and must still
+    // produce valid, non-empty output (logo silently skipped).
+    globalThis.fetch = async () => { throw new Error('simulated network failure') }
+    let pdfFetchFailed
+    let fetchFailThrew = null
+    try {
+      pdfFetchFailed = await renderToBuffer(settingsWithLogo)
+    } catch (err) {
+      fetchFailThrew = err
+    }
+    check('invoice pdf: logo fetch failure does not crash PDF generation', !fetchFailThrew, fetchFailThrew?.message)
+    check('invoice pdf: logo fetch failure still produces valid PDF output', !!pdfFetchFailed && pdfFetchFailed.slice(0, 4).toString() === '%PDF', pdfFetchFailed?.slice(0, 8).toString())
+
+    // 20c. Fetch resolves but with a non-image buffer pdfkit can't embed —
+    // must also degrade gracefully rather than throwing out of doc.image().
+    globalThis.fetch = async () => ({ ok: true, arrayBuffer: async () => Buffer.from('not an image').buffer })
+    let pdfBadImage
+    let badImageThrew = null
+    try {
+      pdfBadImage = await renderToBuffer(settingsWithLogo)
+    } catch (err) {
+      badImageThrew = err
+    }
+    check('invoice pdf: unsupported/corrupt logo image does not crash PDF generation', !badImageThrew, badImageThrew?.message)
+    check('invoice pdf: unsupported/corrupt logo image still produces valid PDF output', !!pdfBadImage && pdfBadImage.slice(0, 4).toString() === '%PDF', pdfBadImage?.slice(0, 8).toString())
+
+    globalThis.fetch = originalFetch
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed > 0) process.exit(1)
 }

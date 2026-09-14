@@ -32,7 +32,11 @@ function imageSrc(url: string): string {
 
 function friendlyError(e: unknown): string {
   console.error(e)
-  return 'Something went wrong. Please try again.'
+  // Surface the actual server-provided message (e.g. "Image is too large
+  // (max 5MB)", "Only JPG, PNG and WebP images are allowed") instead of a
+  // generic catch-all — CoreApiError's message IS the API response body's
+  // `error` field (see coreClient.ts's request()).
+  return e instanceof Error && e.message ? e.message : 'Something went wrong. Please try again.'
 }
 
 function formatBytes(n: number): string {

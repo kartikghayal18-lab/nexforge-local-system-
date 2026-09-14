@@ -63,7 +63,10 @@ export function createApp() {
     if (err && typeof err.http_code === 'number') {
       const status = err.http_code >= 400 && err.http_code < 500 ? 400 : 502
       console.error('[api] Cloudinary error:', err.http_code, err.message)
-      return res.status(status).json({ error: 'Upload failed: ' + (err.message || 'storage provider error') })
+      const clientMessage = status === 400
+        ? 'Image upload failed: the file was rejected. Please try a different file.'
+        : 'Image upload failed. Please try again, or contact support if this persists.'
+      return res.status(status).json({ error: clientMessage })
     }
     console.error('[api] unhandled error:', err)
     res.status(500).json({ error: 'Internal server error' })
